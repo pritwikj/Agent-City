@@ -234,7 +234,7 @@
       const deck = DSV.decks[d];
       const width = deck.rightX - deck.leftX;
       if (width < 28 * U) continue;
-      const n = Math.max(1, Math.min(3, Math.round(width / (72 * U)))); // station count
+      const n = Math.max(1, Math.min(5, Math.round(width / (44 * U)))); // station count
       const margin = 16 * U;
       // The deck ABOVE is each deck's ceiling — only the top deck needs its own.
       // For lower decks the room (and its bulkhead beams) runs the full height up
@@ -441,8 +441,8 @@
     for (const deck of DSV.decks) {
       const width = deck.rightX - deck.leftX;
       if (width < 28 * U) continue;
-      // FEWER, larger stations: ~1 per 72 blocks of (320-space) deck, capped at 3
-      const n = Math.max(1, Math.min(3, Math.round(width / (72 * U))));
+      // More stations per deck: ~1 per 44 blocks of (320-space) deck, capped at 5
+      const n = Math.max(1, Math.min(5, Math.round(width / (44 * U))));
       const margin = 16 * U;
       for (let k = 0; k < n; k++) {
         const x = n === 1

@@ -98,7 +98,7 @@ html, body {
 .legend-deck { color: var(--hud-dim); }
 
 #session-dialogs {
-  bottom: 10px;
+  bottom: 100px;
   right: 10px;
   width: 340px;
   max-height: min(58vh, 520px);
@@ -108,65 +108,62 @@ html, body {
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 2px;
+  perspective: 300px;
 }
 
 .session-dialog {
-  background: var(--hud-bg);
-  border: 1px solid var(--hud-bd);
-  border-left: 3px solid var(--hud-bd);
-  border-radius: 2px;
+  background: transparent;
+  border: none;
   padding: 6px 8px;
   font-size: 10px;
   line-height: 1.35;
   text-transform: none;
+  font-family: "Century Gothic", CenturyGothic, AppleGothic, sans-serif;
+  color: #FFE81F;
+  transform: rotateX(25deg);
+  transform-origin: 50% 100%;
+  text-align: center;
 }
 
-.session-dialog.is-working { border-left-color: #e8e060; }
-.session-dialog.is-idle { border-left-color: var(--hud-dim); }
-.session-dialog.is-error { border-left-color: var(--alert); }
+.session-dialog.is-working { }
+.session-dialog.is-idle { }
+.session-dialog.is-error { }
 
 .session-dialog-header {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 8px;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   margin-bottom: 4px;
   text-transform: uppercase;
   letter-spacing: 0.4px;
 }
 
 .session-dialog-title {
-  color: var(--hud-fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: #FFE81F;
+  white-space: normal;
 }
 
 .session-dialog-status {
-  color: var(--hud-dim);
+  color: #FFE81F;
   font-size: 9px;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .session-dialog-lines {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  max-height: 108px;
-  overflow: hidden;
 }
 
 .dialog-line {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--hud-fg);
+  white-space: normal;
+  color: #FFE81F;
   opacity: 0.9;
 }
 
 .dialog-line .d-seq {
-  color: var(--hud-dim);
-  margin-right: 5px;
+  display: none;
 }
 
 .dialog-line .d-error {

@@ -35,7 +35,7 @@
   const params = new URLSearchParams(location.search);
   const FORCE_DEMO = params.get('demo') === '1';
   const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/stream';
-  const DIALOG_LINES_CAP = 8;
+  const DIALOG_LINES_CAP = 12;
 
   // ---- Status banner ------------------------------------------------------
   function setStatus(text, cls) {
@@ -327,7 +327,8 @@
     }
     elSessionDialogs.innerHTML = dialogs.map((dlg) => {
       const title = dlg.title || dlg.id;
-      const lines = (dlg.lines.length ? dlg.lines : [{ kind: 'idle', text: 'Standing by', seq: '' }]).map((line) => {
+      const linesArr = dlg.lines.length ? [...dlg.lines].reverse() : [{ kind: 'idle', text: 'Standing by', seq: '' }];
+      const lines = linesArr.map((line) => {
         const kindClass = line.kind === 'error' ? 'd-error' : '';
         const seqText = line.seq ? ('#' + line.seq) : '•';
         return '<div class="dialog-line">' +
