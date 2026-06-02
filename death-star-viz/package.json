@@ -1,0 +1,18 @@
+{
+  "name": "death-star-viz",
+  "version": "1.0.0",
+  "description": "Real-time 8-bit Death Star cutaway visualization of Claude Code agents working across projects.",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  }
+}

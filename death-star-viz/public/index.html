@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Death Star — Agent Fleet Viz</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- The single canvas the whole viz renders to. Upscaled with nearest-neighbor. -->
+  <canvas id="stage"></canvas>
+
+  <!-- Floating per-agent action labels (DOM overlay, positioned by render.js to
+       match the canvas blit's uniform scale/offset). Crisp text at any zoom. -->
+  <div id="labels"></div>
+
+  <!-- Connection / status banner (CONNECTING…, DEMO MODE, etc.) -->
+  <div id="status" class="hud status">BOOTING…</div>
+
+  <!-- Top-right HUD: active sessions + throughput -->
+  <div id="hud" class="hud panel">
+    <div class="hud-row"><span class="hud-k">SESSIONS</span><span class="hud-v" id="hud-sessions">0</span></div>
+    <div class="hud-row"><span class="hud-k">DROIDS</span><span class="hud-v" id="hud-droids">0</span></div>
+    <div class="hud-row"><span class="hud-k">THRUPUT</span><span class="hud-v" id="hud-thru">0</span></div>
+    <div class="hud-row"><span class="hud-k">ERR RATE</span><span class="hud-v" id="hud-err">0%</span></div>
+  </div>
+
+  <!-- Bottom-left legend: per-window color -> name -> floor -->
+  <div id="legend" class="hud panel">
+    <div class="legend-title">WINDOWS</div>
+    <div id="legend-list"></div>
+  </div>
+
+  <!-- Bottom-right per-session dialogue windows -->
+  <div id="session-dialogs" class="hud"></div>
+
+  <!-- No interactivity: HUD/legend/dialog windows are passive readouts, always shown.
+       Demo mode is available only via the ?demo=1 URL param. -->
+
+  <!-- Modules. Order matters: helpers before consumers. -->
+  <script src="world.js"></script>
+  <script src="sprites.js"></script>
+  <script src="station.js"></script>
+  <script src="render.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>
