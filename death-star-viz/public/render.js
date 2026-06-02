@@ -728,19 +728,28 @@
         pick.sp.logicalState === 'working' ||
         pick.sp.logicalState === 'autoWork';
 
-      const cx = (dk.leftX + dk.rightX) / 2;
-      
       const ceilY = dk.index > 0
-        ? (DSV.decks[dk.index - 1].floorY + 4 * U) // SLAB is 4*U
+        ? (DSV.decks[dk.index - 1].floorY + 4 * U)
         : (DSV.station.CY - DSV.station.R + DSV.station.HULL_T + 2 * U);
-      const roomTop = dk.index === 0 ? Math.max(ceilY, dk.floorY - 28 * U) : ceilY;
+      const roomTop = dk.index === 0 ? Math.max(ceilY, dk.floorY - 42 * U) : ceilY;
       
+      // Calculate usable width at the text's Y position to avoid overlapping the hull
+      const textY = roomTop + 8 * U;
+      const dy = textY - DSV.station.CY;
+      const innerR = DSV.station.R - DSV.station.HULL_T;
+      const inside = innerR * innerR - dy * dy;
+      const hw = inside > 0 ? Math.sqrt(inside) - 1 : 0;
+      const roomLeft = Math.max(dk.leftX, DSV.station.CX - hw);
+      const roomRight = Math.min(dk.rightX, DSV.station.CX + hw);
+      
+      const usableW = (roomRight - roomLeft - 16 * U) * PX;
+      const textCx = (roomLeft + roomRight) / 2;
+
       // Place it higher up on the back wall, just under the ceiling beam
-      const ty = Math.round((roomTop + 8 * U) * PX);
-      const tx = Math.round(cx * PX);
+      const ty = Math.round(textY * PX);
+      const tx = Math.round(textCx * PX);
 
       const txt = `SECTOR ${dk.index + 1}: ${pick.title}`.toUpperCase();
-      const usableW = (dk.rightX - dk.leftX - 16 * U) * PX;
       
       let fontSize = 6 * U;
       ctx.font = `bold ${fontSize}px "Courier New", ui-monospace, Menlo, monospace`;

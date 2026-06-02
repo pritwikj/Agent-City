@@ -52,6 +52,14 @@
     return Math.sqrt(inside);
   }
 
+  function innerHalfWidthAt(row) {
+    const dy = row - CY;
+    const innerR = R - HULL_T;
+    const inside = innerR * innerR - dy * dy;
+    if (inside <= 0) return 0;
+    return Math.sqrt(inside);
+  }
+
   function buildStation() {
     const off = document.createElement('canvas');
     off.width = GRID_W * PX;
@@ -176,7 +184,7 @@
     const SLAB = 4 * U; // deck slab thickness in blocks
     for (let d = 0; d < DECK_COUNT; d++) {
       const floorY = Math.round(top + (span * d) / (DECK_COUNT - 1));
-      const hw = halfWidthAt(floorY) - HULL_T - 1;
+      const hw = innerHalfWidthAt(floorY) - 1;
       if (hw <= 8 * U) { DSV.decks.push({ index: d, floorY, leftX: CX, rightX: CX }); continue; }
       const leftX = Math.round(CX - hw);
       const rightX = Math.round(CX + hw);
@@ -186,7 +194,7 @@
       // descends a few rows below floorY, and below the equator the sphere gets
       // narrower going down, so without this the slab ends would poke through the
       // outer rim. inEdge(row) = interior half-extent (from CX) at that row.
-      const inEdge = (row) => halfWidthAt(row) - HULL_T - 1;
+      const inEdge = (row) => innerHalfWidthAt(row) - 1;
       // Span the slab columns out to its WIDEST row, not just the floorY row.
       // Above the equator the hull flares wider as the slab descends, so a loop
       // bounded at floorY leaves a wedge gap at the ends (the per-row clip can
@@ -232,18 +240,16 @@
     // the big workstations sit inside real rooms rather than on an open floor. ---
     for (let d = 0; d < DSV.decks.length; d++) {
       const deck = DSV.decks[d];
-      const width = deck.rightX - deck.leftX;
-      if (width < 28 * U) continue;
-      const n = Math.max(1, Math.min(5, Math.round(width / (44 * U)))); // station count
-      const margin = 16 * U;
-      // The deck ABOVE is each deck's ceiling — only the top deck needs its own.
-      // For lower decks the room (and its bulkhead beams) runs the full height up
-      // to the underside of the slab above, so nothing floats below a redundant
-      // ceiling. The top deck still gets a drawn ceiling beam capping it.
       const isTop = d === 0;
       const ceilY = isTop ? (CY - R + HULL_T + 2 * U)
                           : DSV.decks[d - 1].floorY + SLAB; // underside of deck above
-      const roomTop = isTop ? Math.max(ceilY, deck.floorY - 28 * U) : ceilY;
+      const roomTop = isTop ? Math.max(ceilY, deck.floorY - 42 * U) : ceilY;
+
+      const roomWidth = deck.rightX - deck.leftX;
+
+      if (roomWidth < 28 * U) continue;
+      const n = Math.max(1, Math.min(5, Math.round(roomWidth / (44 * U)))); // station count
+      const margin = 16 * U;
       const doorTop = deck.floorY - 7 * U; // doorway opening height from the floor
 
       // ceiling beam across the deck interior: a lit rail over a dark soffit,
@@ -251,19 +257,24 @@
       // room. Lower decks use the floor above as their ceiling instead.
       if (isTop) {
         for (let c = deck.leftX; c <= deck.rightX; c++) {
-          if (Math.abs(c - CX) > halfWidthAt(roomTop) - HULL_T - 1) continue;
-          block(ctx, c, roomTop, PAL.dividerHi);   // lit rail
-          block(ctx, c, roomTop + 1, PAL.divider);
-          block(ctx, c, roomTop + 2, PAL.deckEdge); // dark soffit
-          if (c % (12 * U) === 6 * U) { block(ctx, c, roomTop + 3, PAL.lampDim); block(ctx, c, roomTop + 4, PAL.lamp); }
+          if (Math.abs(c - CX) <= innerHalfWidthAt(roomTop) - 1) block(ctx, c, roomTop, PAL.dividerHi);   // lit rail
+          if (Math.abs(c - CX) <= innerHalfWidthAt(roomTop + 1) - 1) block(ctx, c, roomTop + 1, PAL.divider);
+          if (Math.abs(c - CX) <= innerHalfWidthAt(roomTop + 2) - 1) block(ctx, c, roomTop + 2, PAL.deckEdge); // dark soffit
+          if (c % (12 * U) === 6 * U) {
+            if (Math.abs(c - CX) <= innerHalfWidthAt(roomTop + 3) - 1) block(ctx, c, roomTop + 3, PAL.lampDim);
+            if (Math.abs(c - CX) <= innerHalfWidthAt(roomTop + 4) - 1) block(ctx, c, roomTop + 4, PAL.lamp);
+          }
         }
       }
       // back-wall paneling: a sparse riveted grid (NOT continuous lines, so it
       // never reads as a floor) + the odd lit viewport, so each bay has a wall
       // behind its console instead of empty void.
       for (let r = roomTop + 4 * U; r < deck.floorY - 9 * U; r += 3 * U) {
-        for (let c = deck.leftX + 4 * U; c <= deck.rightX - 4 * U; c += 4 * U) {
-          if (Math.abs(c - CX) > halfWidthAt(r) - HULL_T - 1) continue;
+        // Sweep across the whole possible width, clip against the hull at each row.
+        // This ensures the back wall perfectly fills the wedge on lower decks
+        // where the room ceiling is wider than the floor.
+        for (let c = CX % (4 * U); c < off.width; c += 4 * U) {
+          if (Math.abs(c - CX) > innerHalfWidthAt(r) - 1) continue;
           block(ctx, c, r, PAL.panelLo);          // rivet stud
           block(ctx, c + 1, r, PAL.interior2);
           if ((r + c) % (12 * U) === 0) block(ctx, c, r, PAL.window); // tiny lit port
@@ -274,11 +285,11 @@
       if (n < 2) continue;
       const wallTop = roomTop;
       for (let k = 0; k < n - 1; k++) {
-        const xa = deck.leftX + margin + (width - 2 * margin) * (k / (n - 1));
-        const xb = deck.leftX + margin + (width - 2 * margin) * ((k + 1) / (n - 1));
+        const xa = deck.leftX + margin + (roomWidth - 2 * margin) * (k / (n - 1));
+        const xb = deck.leftX + margin + (roomWidth - 2 * margin) * ((k + 1) / (n - 1));
         const col = Math.round((xa + xb) / 2);
         for (let row = wallTop; row < deck.floorY; row++) {
-          if (Math.abs(col - CX) > halfWidthAt(row) - HULL_T - 1) continue;
+          if (Math.abs(col - CX) > innerHalfWidthAt(row) - 1) continue;
           if (row >= doorTop) {
             // doorway: lit frame posts on either side, open in the middle
             block(ctx, col - 2 * U, row, PAL.dividerHi);
@@ -288,7 +299,7 @@
             block(ctx, col - U, row, PAL.dividerHi); // lit left edge
             // maintenance ladder rungs climbing the right face
             if ((deck.floorY - row) % (2 * U) === 0 &&
-                Math.abs(col + 2 * U - CX) <= halfWidthAt(row) - HULL_T - 1)
+                Math.abs(col + 2 * U - CX) <= innerHalfWidthAt(row) - 1)
               block(ctx, col + 2 * U, row, PAL.stationHi);
             // a glowing conduit run threaded up the wall
             if ((deck.floorY - row) % (3 * U) === U) block(ctx, col, row, PAL.conduitHi);
@@ -301,7 +312,7 @@
         }
         // header lintel across the top of the doorway
         for (let c = col - 2 * U; c <= col + 2 * U; c++) {
-          if (Math.abs(c - CX) <= halfWidthAt(doorTop - 1) - HULL_T - 1)
+          if (Math.abs(c - CX) <= innerHalfWidthAt(doorTop - 1) - 1)
             block(ctx, c, doorTop - 1, PAL.dividerHi);
         }
       }
@@ -314,7 +325,7 @@
     const STATION_TYPES = ['command', 'turbolaser', 'tractor', 'sensor', 'engineering'];
 
     function clearAbove(col, row) {
-      return Math.abs(col - CX) <= halfWidthAt(row) - HULL_T - 1;
+      return Math.abs(col - CX) <= innerHalfWidthAt(row) - 1;
     }
     const put = (c, r, color) => { if (clearAbove(c, r)) block(ctx, c, r, color); };
     const fillBlocks = (c0, r0, c1, r1, color) => {
@@ -382,7 +393,7 @@
       } else if (type === 'tractor') {
         // full-height reactor / tractor-beam column with catwalk rings + a wide
         // base console (the glowing power core of the bay).
-        const topRow = Math.max(floorY - 26 * U, CY - R + HULL_T + 3 * U);
+        const topRow = Math.max(floorY - 40 * U, CY - R + HULL_T + 3 * U);
         for (let r = floorY - 1; r >= topRow; r--) {
           put(x - 2 * U, r, PAL.station); put(x + 2 * U, r, PAL.stationHi);                 // shaft walls
           put(x - U, r, PAL.bezel);       put(x + U, r, PAL.bezel);
@@ -439,15 +450,19 @@
 
     DSV.consoles.length = 0;
     for (const deck of DSV.decks) {
-      const width = deck.rightX - deck.leftX;
-      if (width < 28 * U) continue;
+      const isTop = deck.index === 0;
+      const ceilY = isTop ? (CY - R + HULL_T + 2 * U) : DSV.decks[deck.index - 1].floorY + SLAB;
+      const roomTop = isTop ? Math.max(ceilY, deck.floorY - 42 * U) : ceilY;
+      const roomWidth = deck.rightX - deck.leftX;
+
+      if (roomWidth < 28 * U) continue;
       // More stations per deck: ~1 per 44 blocks of (320-space) deck, capped at 5
-      const n = Math.max(1, Math.min(5, Math.round(width / (44 * U))));
+      const n = Math.max(1, Math.min(5, Math.round(roomWidth / (44 * U))));
       const margin = 16 * U;
       for (let k = 0; k < n; k++) {
         const x = n === 1
           ? Math.round((deck.leftX + deck.rightX) / 2)
-          : Math.round(deck.leftX + margin + (width - 2 * margin) * (k / (n - 1)));
+          : Math.round(deck.leftX + margin + (roomWidth - 2 * margin) * (k / (n - 1)));
         const type = STATION_TYPES[(deck.index + k * 2) % STATION_TYPES.length];
         const spots = drawStation(type, x, deck.floorY);
         DSV.consoles.push({ deck: deck.index, x, y: deck.floorY, type, spots });
@@ -468,11 +483,15 @@
       put(cx, floorY - 1 - 2 * U, PAL.blue); // glowing cap
     }
     for (const deck of DSV.decks) {
-      const width = deck.rightX - deck.leftX;
-      if (width < 40 * U) continue;
+      const isTop = deck.index === 0;
+      const ceilY = isTop ? (CY - R + HULL_T + 2 * U) : DSV.decks[deck.index - 1].floorY + SLAB;
+      const roomTop = isTop ? Math.max(ceilY, deck.floorY - 42 * U) : ceilY;
+      const roomWidth = deck.rightX - deck.leftX;
+
+      if (deck.rightX - deck.leftX < 40 * U) continue;
       drawCrates(deck.leftX + 6 * U, deck.floorY);          // cargo by the left wall
       drawCanister(deck.rightX - 6 * U, deck.floorY);       // canister by the right wall
-      if (width > 120 * U) drawCrates(Math.round((deck.leftX + deck.rightX) / 2) + 18 * U, deck.floorY);
+      if (deck.rightX - deck.leftX > 120 * U) drawCrates(Math.round((deck.leftX + deck.rightX) / 2) + 18 * U, deck.floorY);
     }
 
     // --- overhead lighting: lamp fixtures hung beneath each deck slab ---
@@ -484,7 +503,7 @@
       for (let k = 0; k < lampN; k++) {
         const lx = Math.round(deck.leftX + 10 * U + (width - 20 * U) * (k / Math.max(1, lampN - 1)));
         const ly = deck.floorY + 6 * U; // hangs below this slab, above the next deck
-        if (Math.abs(lx - CX) > halfWidthAt(ly) - HULL_T - 1) continue;
+        if (Math.abs(lx - CX) > innerHalfWidthAt(ly) - 1) continue;
         block(ctx, lx, deck.floorY + SLAB, PAL.stationHi); // bracket
         block(ctx, lx, deck.floorY + SLAB + 1, PAL.lampDim);
         block(ctx, lx, ly, PAL.lamp);                      // bulb
@@ -629,7 +648,7 @@
       // lift shaft (vertical doorway) on left side of lowest deck
       const lsx = low.leftX + 6 * U;
       for (let row = low.floorY - 18 * U; row < low.floorY; row++) {
-        if (Math.abs(lsx - CX) > halfWidthAt(row) - HULL_T - 1) continue;
+        if (Math.abs(lsx - CX) > innerHalfWidthAt(row) - 1) continue;
         for (let c = 0; c < 2 * U; c++) block(ctx, lsx + c, row, c < U ? '#24242c' : '#2c2c34');
         // lift-level indicator lights running up the shaft
         if ((low.floorY - row) % (4 * U) === 0) block(ctx, lsx, row, PAL.lamp);
@@ -646,9 +665,9 @@
     const botI = CY + R - HULL_T - 2 * U;
     for (let side = -1; side <= 1; side += 2) {
       for (let row = topI; row <= botI; row++) {
-        const hw = halfWidthAt(row);
-        if (hw <= HULL_T + 4 * U) continue;
-        const col = Math.round(CX + side * (hw - HULL_T - 1));
+        const hwInner = innerHalfWidthAt(row);
+        if (hwInner <= 4 * U) continue;
+        const col = Math.round(CX + side * (hwInner - 1));
         if (row % 2 === 0) block(ctx, col, row, PAL.conduit);
         if (row % (8 * U) === 0) { block(ctx, col - side, row, PAL.conduitHi); block(ctx, col - side * 2, row, PAL.pipeHi); } // junction node
       }
