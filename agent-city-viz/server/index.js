@@ -56,6 +56,8 @@ import express from 'express';
 import { WebSocketServer } from 'ws';
 
 import { WorldModel } from './worldModel.js';
+import { CityModel } from './city.js';
+import { loadCity, createPersister } from './persist.js';
 import { createIngest } from './ingest.js';
 import {
   startReaper,
@@ -74,6 +76,33 @@ const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
 const world = new WorldModel();
 const ingest = createIngest(world, { debug: DEBUG });
 startReaper(world, { debug: DEBUG });
+
+// Persistent city layer: tool work builds districts/lots that survive restarts.
+const SAVE_PATH = path.resolve(__dirname, '..', 'data', 'city.json');
+const city = new CityModel(world); // shares the world's seq space
+const savedCity = loadCity(SAVE_PATH, { debug: DEBUG });
+if (savedCity) city.loadFrom(savedCity);
+const persister = createPersister(city, SAVE_PATH, { debug: DEBUG });
+
+world.on('work', (w) => {
+  // City growth must never take down the ingest pipeline.
+  try {
+    if (w.isFailure) city.recordIncident(w);
+    else city.recordWork(w);
+  } catch (err) {
+    console.error('[city] record failed:', err?.message ?? err);
+  }
+});
+
+// When the city binds a session to a building, tag the session entity so the
+// client can place its worker at that construction site.
+city.on('assign', ({ sessionId, districtKey, lotId }) => {
+  try {
+    world.setSessionBuilding(sessionId, districtKey, lotId);
+  } catch (err) {
+    console.error('[city] assign failed:', err?.message ?? err);
+  }
+});
 
 // ── HTTP / Express ───────────────────────────────────────────────────────────
 const app = express();
@@ -115,7 +144,7 @@ app.post('/ingest', (req, res) => {
 
 // Health check.
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, entities: world.entities.size, seq: world.seq });
+  res.json({ ok: true, entities: world.entities.size, seq: world.seq, ...city.stats() });
 });
 
 // Serve the client (added by another agent) at /. Mounted last so /ingest etc.
@@ -193,14 +222,24 @@ function doHandshake(ws, lastSeq) {
     if (DEBUG) console.log(`[ws] resync from seq=${lastSeq} (${missed.length} msgs)`);
     for (const m of missed) send(ws, m);
     // Follow with fresh aggregates so the lens is correct immediately.
-    send(ws, { type: 'aggregates', seq: world.seq, aggregates: world.computeAggregates() });
+    send(ws, { type: 'aggregates', seq: world.seq, aggregates: aggregatesWithCity() });
   } else {
     // Fresh / stale -> full snapshot.
     const snap = world.snapshot();
+    snap.aggregates.city = city.stats();
     if (DEBUG) console.log(`[ws] snapshot @ seq=${snap.seq} (${snap.entities.length} entities)`);
     send(ws, snap);
   }
+  // City messages are never in the resync ring; ALWAYS send a fresh full city
+  // snapshot on handshake (it is small — a few KB for hundreds of buildings).
+  send(ws, city.snapshotCity());
   ws.subscribed = true;
+}
+
+function aggregatesWithCity() {
+  const aggregates = world.computeAggregates();
+  aggregates.city = city.stats();
+  return aggregates;
 }
 
 // ── Outbound coalescing ──────────────────────────────────────────────────────
@@ -212,11 +251,16 @@ function doHandshake(ws, lastSeq) {
 
 let pending = []; // deltas waiting for the next tick
 let aggregatesDirty = false;
+/** @type {Map<string, object>} lotId -> latest progress cityDelta (coalesced) */
+let pendingCity = new Map();
 
 world.on('message', (msg) => {
   switch (msg.type) {
-    case 'spawn':
     case 'despawn':
+      // A departed session no longer needs its city binding tracked.
+      city.releaseSession(msg.entityId);
+      // fallthrough to the lifecycle-beat broadcast below.
+    case 'spawn':
       // Lifecycle beat: push immediately to subscribed clients.
       flushPending(); // keep seq ordering: drain coalesced ones first
       broadcastSubscribed(msg);
@@ -263,13 +307,34 @@ function flushPending() {
   pending = [];
 }
 
+// City messages: `progress` deltas are high-frequency (one per tool use) and
+// idempotent (full lot in every delta), so coalesce them per lot on the tick.
+// Lifecycle beats (groundbreak/complete/incident) flush immediately.
+city.on('message', (msg) => {
+  if (msg.type === 'cityDelta' && msg.event === 'progress') {
+    pendingCity.set(msg.lot.id, msg);
+    aggregatesDirty = true;
+  } else {
+    flushPendingCity();
+    broadcastSubscribed(msg);
+    aggregatesDirty = true;
+  }
+});
+
+function flushPendingCity() {
+  if (pendingCity.size === 0) return;
+  for (const m of pendingCity.values()) broadcastSubscribed(m);
+  pendingCity = new Map();
+}
+
 // Fixed tick: flush coalesced deltas, then push aggregates if anything changed.
 const tickHandle = setInterval(() => {
   flushPending();
+  flushPendingCity();
   if (aggregatesDirty) {
     aggregatesDirty = false;
     const seq = world.nextSeq();
-    broadcastSubscribed({ type: 'aggregates', seq, aggregates: world.computeAggregates() });
+    broadcastSubscribed({ type: 'aggregates', seq, aggregates: aggregatesWithCity() });
   }
 }, TICK_MS);
 if (typeof tickHandle.unref === 'function') tickHandle.unref();
@@ -303,13 +368,16 @@ process.on('unhandledRejection', (reason) => {
 server.listen(PORT, () => {
   const base = `http://localhost:${PORT}`;
   console.log('');
+  const cs = city.stats();
   console.log('  ╔══════════════════════════════════════════════════════╗');
-  console.log('  ║   DEATH STAR VIZ — event server online                ║');
+  console.log('  ║   AGENT CITY — event server online                    ║');
   console.log('  ╚══════════════════════════════════════════════════════╝');
   console.log(`   listening      : ${PORT}`);
   console.log(`   ingest (POST)  : ${base}/ingest`);
   console.log(`   stream (WS)    : ws://localhost:${PORT}/stream`);
   console.log(`   viz            : ${base}/`);
+  console.log(`   city           : ${cs.buildings} built / ${cs.underConstruction} in progress across ${cs.districts} district(s)`);
+  console.log(`   save file      : ${SAVE_PATH}`);
   console.log(`   tick           : ${TICK_MS}ms   reaper: dim ${DIM_THRESHOLD_MS / 1000}s / despawn ${DESPAWN_THRESHOLD_MS / 1000}s every ${REAP_INTERVAL_MS / 1000}s`);
   console.log(`   debug          : ${DEBUG ? 'on' : 'off (set DEBUG=1 for verbose)'}`);
   console.log('');
@@ -317,6 +385,7 @@ server.listen(PORT, () => {
 
 // Graceful shutdown.
 function shutdown() {
+  persister.flushSync(); // never lose city progress on a clean exit
   clearInterval(tickHandle);
   clearInterval(pingHandle);
   try {

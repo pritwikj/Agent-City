@@ -1,0 +1,232 @@
+/* ===========================================================================
+   Agent City — client styles.
+   Light, sunny Cities Skylines UI: rounded panels, soft shadows, blue/teal
+   accents. (Deliberate inversion of the old dark Imperial palette.)
+   =========================================================================== */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* Sky: a warm sun glow in the upper-right over a clear daylight gradient.
+     The canvas clears to transparent, so this shows through empty sky and is
+     occluded by the buildings drawn on top. */
+  background:
+    radial-gradient(120% 90% at 82% 4%, rgba(255,246,214,0.95) 0%, rgba(255,241,200,0.0) 42%),
+    linear-gradient(to bottom, #bfe6f7 0%, #cfeef1 48%, #e9f6ef 78%, #f2efe2 100%);
+  background-attachment: fixed;
+}
+
+#city-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  z-index: 0;
+}
+#city-canvas:active { cursor: grabbing; }
+
+/* Vignette + a faint top sky-light wash; pure decoration, no input. */
+#atmos {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background:
+    radial-gradient(130% 110% at 50% 46%, rgba(0,0,0,0) 58%, rgba(28,40,54,0.16) 100%);
+}
+
+/* ---- DOM overlay (worker labels + chirp bubbles) ------------------------- */
+#overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 2;
+}
+
+.worker-label {
+  position: absolute;
+  top: 0; left: 0;
+  padding: 1px 7px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid #9aa6b2;
+  border-left-width: 4px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #2c3e50;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 4px rgba(40, 60, 80, 0.18);
+  will-change: transform;
+}
+
+.chirp-bubble {
+  position: absolute;
+  top: 0; left: 0;
+  max-width: 240px;
+  padding: 6px 10px;
+  background: #ffffff;
+  border: 1.5px solid #74b9d8;
+  border-radius: 12px;
+  font-size: 12px;
+  color: #234;
+  box-shadow: 0 3px 10px rgba(40, 60, 80, 0.22);
+  will-change: transform;
+}
+.chirp-bubble::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  margin-left: -5px;
+  border: 5px solid transparent;
+  border-top-color: #ffffff;
+  border-bottom: none;
+  filter: drop-shadow(0 1.5px 0 #74b9d8);
+}
+.chirp-bubble.is-error {
+  border-color: #e05252;
+  background: #fdeeee;
+  color: #8a2424;
+}
+
+/* ---- HUD panels ------------------------------------------------------------ */
+.panel {
+  position: absolute;
+  background: rgba(252, 254, 255, 0.92);
+  border: 1px solid rgba(120, 150, 175, 0.45);
+  border-radius: 12px;
+  box-shadow: 0 4px 18px rgba(40, 70, 100, 0.16);
+  color: #2c3e50;
+  backdrop-filter: blur(6px);
+  z-index: 10;
+}
+
+#hud-title {
+  top: 14px;
+  left: 14px;
+  padding: 10px 16px;
+}
+.city-name {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: #1d6fa5;
+}
+.status {
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #7a8a99;
+}
+.status.live { color: #2e9e5b; }
+.status.connecting { color: #d99a2b; }
+.status.demo { color: #8a6ad6; }
+
+#hud-stats {
+  top: 14px;
+  right: 14px;
+  padding: 10px 14px;
+  min-width: 170px;
+}
+.stat {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  font-size: 11px;
+  line-height: 1.8;
+}
+.stat-k { color: #7a8a99; font-weight: 700; letter-spacing: 0.8px; }
+.stat-v { color: #1d6fa5; font-weight: 800; font-variant-numeric: tabular-nums; }
+.stat-v.hot { color: #2e9e5b; }
+.stat-v.alert { color: #d64545; }
+
+#hud-districts {
+  bottom: 14px;
+  left: 14px;
+  padding: 10px 14px;
+  max-width: 280px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.panel-head {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  color: #7a8a99;
+  margin-bottom: 6px;
+}
+.district-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.9;
+  white-space: nowrap;
+}
+.district-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex: none;
+}
+.district-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 170px;
+}
+.district-count {
+  margin-left: auto;
+  color: #7a8a99;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.district-empty { color: #9aa6b2; font-size: 11px; }
+
+/* ---- Chirper feed ------------------------------------------------------------ */
+#hud-chirper {
+  bottom: 14px;
+  right: 14px;
+  width: 300px;
+  max-height: 44vh;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+}
+#chirper-feed {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.chirp-post {
+  display: flex;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(116, 185, 216, 0.10);
+  border-radius: 9px;
+  font-size: 11.5px;
+}
+.chirp-post.is-error { background: rgba(224, 82, 82, 0.10); }
+.chirp-post.is-error .chirp-text { color: #a33; }
+.chirp-bird { flex: none; font-size: 13px; }
+.chirp-body { min-width: 0; }
+.chirp-handle { font-weight: 800; color: #1d6fa5; font-size: 10.5px; }
+.chirp-text { color: #44535f; overflow-wrap: break-word; }
+
+/* slim scrollbars */
+#chirper-feed::-webkit-scrollbar, #hud-districts::-webkit-scrollbar { width: 5px; }
+#chirper-feed::-webkit-scrollbar-thumb, #hud-districts::-webkit-scrollbar-thumb {
+  background: rgba(120, 150, 175, 0.4);
+  border-radius: 3px;
+}

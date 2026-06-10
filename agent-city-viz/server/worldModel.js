@@ -460,6 +460,11 @@ export class WorldModel extends EventEmitter {
       // Human-readable "<Verb> <target>" phrase for the floating sprite label;
       // set on PreToolUse, cleared/restored on PostToolUse + Stop.
       currentAction: null,
+      // The city building this session is bound to (set by CityModel via
+      // setSessionBuilding once the session does its first work). The client
+      // uses this to place the session's worker at its construction site.
+      buildingLotId: null,
+      buildingDistrictKey: null,
       lastSeen: now,
       toolCount: 0,
       errorCount: 0,
@@ -467,6 +472,20 @@ export class WorldModel extends EventEmitter {
       recentEvents: [],
       recentToolActions: [],
     };
+  }
+
+  /**
+   * Tag a session with the city lot it is building (called from index.js when
+   * the CityModel emits an 'assign'). Emits a delta so the client can move the
+   * worker to its site. No-op for unknown / non-session ids.
+   */
+  setSessionBuilding(sessionId, districtKey, lotId) {
+    const rec = this.entities.get(sessionId);
+    if (!rec || rec.kind !== 'session') return;
+    if (rec.buildingLotId === lotId && rec.buildingDistrictKey === districtKey) return;
+    rec.buildingLotId = lotId;
+    rec.buildingDistrictKey = districtKey;
+    this.emitDelta(sessionId, { buildingLotId: lotId, buildingDistrictKey: districtKey });
   }
 
   onSessionStart(event, now) {
@@ -614,6 +633,15 @@ export class WorldModel extends EventEmitter {
       const doneText = finished?.action ? `Done: ${finished.action}` : 'Tool finished';
       this.pushRecentToolAction(rec, 'done', doneText, seq, now);
     }
+
+    // Feed the persistent city layer: each completed tool is one unit of
+    // construction work (failures become incidents). Consumed in index.js.
+    this.emit('work', {
+      project: rec.project,
+      family: finished?.family ?? null,
+      sessionId: rec.id,
+      isFailure,
+    });
   }
 
   onSubagentStart(event, now) {

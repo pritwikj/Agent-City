@@ -1,0 +1,339 @@
+/* ===========================================================================
+   render.js — main animation loop and scene composition.
+
+   Layers per frame (back to front):
+     1. sky          — CSS gradient on the page body (free)
+     2. ground       — static offscreen canvas (roads + grass), rebuilt only
+                       when blocks appear (groundVersion changes)
+     3. draw list    — lots (sprite-cached buildings), cranes, trees on empty
+                       parcels, citizens — one painter's-algorithm sort by
+                       south-anchor depth key
+     4. effects      — particles (dust/sparks/smoke/confetti) on top
+   (workers are silent: no labels, speech bubbles or activity feed.)
+
+   Canvas is devicePixelRatio-aware with smoothing ON — crisp vector iso at
+   any zoom (deliberate departure from the old 640x640 pixel-art blit).
+   =========================================================================== */
+(function () {
+  'use strict';
+  const C = window.CITY;
+
+  const canvas = document.getElementById('city-canvas');
+  const ctx = canvas.getContext('2d');
+  const camera = C.createCamera(canvas);
+
+  let groundCanvas = null;
+  let groundMeta = null; // { minX, minY, res }
+  let lastGroundVersion = -1;
+  const GROUND_RES = 2;
+  const GROUND_MAX_PX = 8192;
+
+  // ---- Canvas sizing ----------------------------------------------------------
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+  }
+  window.addEventListener('resize', () => { resize(); camera.fit(); });
+
+  // ---- Static ground layer ------------------------------------------------------
+  function blocksForRender() {
+    const set = new Set(C.usedBlocks());
+    set.add(0); // origin block always exists (fresh-city home for workers)
+    return [...set];
+  }
+
+  function rebuildGround() {
+    lastGroundVersion = C.getGroundVersion();
+    const blocks = blocksForRender();
+    const B = C.BLOCK_TILES;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const slot of blocks) {
+      const o = C.blockOrigin(slot);
+      for (const [cx, cy] of [[0, 0], [B, 0], [0, B], [B, B]]) {
+        const p = C.worldToScreen(o.tx + cx, o.ty + cy, 0);
+        minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+      }
+    }
+    const margin = C.TILE_W;
+    minX -= margin; minY -= margin; maxX += margin; maxY += margin;
+    let res = GROUND_RES;
+    while ((maxX - minX) * res > GROUND_MAX_PX || (maxY - minY) * res > GROUND_MAX_PX) res /= 2;
+
+    groundCanvas = document.createElement('canvas');
+    groundCanvas.width = Math.ceil((maxX - minX) * res);
+    groundCanvas.height = Math.ceil((maxY - minY) * res);
+    groundMeta = { minX, minY, res };
+    const g = groundCanvas.getContext('2d');
+    g.setTransform(res, 0, 0, res, -minX * res, -minY * res);
+
+    for (const slot of blocks) {
+      const o = C.blockOrigin(slot);
+      // full block as asphalt, with a slightly darker outer kerb edge
+      C.drawDiamond(g, o.tx, o.ty, B, B, C.PAL.road, C.PAL.roadEdge);
+      // sidewalk ring (the 6x6 interior) with a crisp curb line
+      C.drawDiamond(g, o.tx + 1, o.ty + 1, B - 2, B - 2, C.PAL.sidewalk, C.PAL.curb);
+      // grass interior: darker base + lighter inset = a soft, un-flat lawn
+      C.drawDiamond(g, o.tx + 1.3, o.ty + 1.3, B - 2.6, B - 2.6, C.PAL.grass, C.PAL.grassEdge);
+      C.drawDiamond(g, o.tx + 1.85, o.ty + 1.85, B - 3.7, B - 3.7, C.PAL.grassHi);
+      // internal alley seams — thin paved paths on the parcel grid lines that
+      // divide the 6x6 interior into its 3x3 lots (cosmetic; citizens still
+      // walk only the perimeter ring). Hidden under any building/tree on top.
+      for (const gx of [3, 5]) C.drawDiamond(g, o.tx + gx - 0.16, o.ty + 1, 0.32, B - 2, C.PAL.sidewalk);
+      for (const gy of [3, 5]) C.drawDiamond(g, o.tx + 1, o.ty + gy - 0.16, B - 2, 0.32, C.PAL.sidewalk);
+      // dashed warm centre-line around the road ring
+      g.strokeStyle = 'rgba(230,193,77,0.55)';
+      g.lineWidth = 0.8;
+      g.setLineDash([4, 6]);
+      const c0 = C.worldToScreen(o.tx + 0.5, o.ty + 0.5, 0);
+      const c1 = C.worldToScreen(o.tx + B - 0.5, o.ty + 0.5, 0);
+      const c2 = C.worldToScreen(o.tx + B - 0.5, o.ty + B - 0.5, 0);
+      const c3 = C.worldToScreen(o.tx + 0.5, o.ty + B - 0.5, 0);
+      g.beginPath();
+      g.moveTo(c0.x, c0.y); g.lineTo(c1.x, c1.y); g.lineTo(c2.x, c2.y);
+      g.lineTo(c3.x, c3.y); g.closePath();
+      g.stroke();
+      g.setLineDash([]);
+    }
+    camera.setBounds(C.worldBounds());
+  }
+
+  // ---- Trees on parcels that have no lot yet --------------------------------------
+  function drawTree(ctx2, tx, ty, seed) {
+    const p = C.worldToScreen(tx, ty, 0);
+    const s = 0.85 + (seed % 5) * 0.13;
+    // ground shadow toward the SW (matches building light direction)
+    ctx2.fillStyle = 'rgba(' + C.PAL.shadow + ',0.16)';
+    ctx2.beginPath();
+    ctx2.ellipse(p.x - 2.5 * s, p.y + 0.5, 6 * s, 2.8 * s, 0, 0, Math.PI * 2);
+    ctx2.fill();
+    // trunk
+    ctx2.strokeStyle = '#6f5235';
+    ctx2.lineWidth = 1.8 * s;
+    ctx2.lineCap = 'round';
+    ctx2.beginPath();
+    ctx2.moveTo(p.x, p.y);
+    ctx2.lineTo(p.x, p.y - 7 * s);
+    ctx2.stroke();
+    ctx2.lineCap = 'butt';
+    // layered canopy: shaded base, body, sunlit cap
+    const dark = (seed & 1) ? '#4f9a48' : '#5aa551';
+    const mid = (seed & 1) ? '#62b257' : '#6dbd61';
+    ctx2.fillStyle = dark;
+    ctx2.beginPath(); ctx2.arc(p.x + 1.6 * s, p.y - 9 * s, 4.4 * s, 0, Math.PI * 2); ctx2.fill();
+    ctx2.beginPath(); ctx2.arc(p.x - 1.8 * s, p.y - 9.5 * s, 4.2 * s, 0, Math.PI * 2); ctx2.fill();
+    ctx2.fillStyle = mid;
+    ctx2.beginPath(); ctx2.arc(p.x, p.y - 11 * s, 5.2 * s, 0, Math.PI * 2); ctx2.fill();
+    ctx2.fillStyle = 'rgba(214,243,170,0.55)';
+    ctx2.beginPath(); ctx2.arc(p.x - 1.7 * s, p.y - 12.4 * s, 2.4 * s, 0, Math.PI * 2); ctx2.fill();
+  }
+
+  // ---- Ambient parcel zoning -------------------------------------------------
+  // The server keeps building lots growable (a session's work must show), so
+  // parks & landfills live HERE as cosmetic zoning on parcels a district has
+  // not built on yet — exactly how a Cities-Skylines park is a zoned tile
+  // rather than a "grown" structure. Each empty parcel rolls a zone by seed.
+  function drawPond(ctx2, tx, ty) {
+    const p = C.worldToScreen(tx, ty, 0);
+    const rx = 13, ry = rx * 0.5;
+    ctx2.fillStyle = '#6fb6d6';
+    ctx2.beginPath(); ctx2.ellipse(p.x, p.y, rx, ry, 0, 0, Math.PI * 2); ctx2.fill();
+    ctx2.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx2.beginPath(); ctx2.ellipse(p.x - 3, p.y - 1.5, rx * 0.4, ry * 0.4, 0, 0, Math.PI * 2); ctx2.fill();
+    ctx2.strokeStyle = 'rgba(40,90,120,0.4)'; ctx2.lineWidth = 1;
+    ctx2.beginPath(); ctx2.ellipse(p.x, p.y, rx, ry, 0, 0, Math.PI * 2); ctx2.stroke();
+  }
+  function drawFountain(ctx2, tx, ty) {
+    const p = C.worldToScreen(tx, ty, 0);
+    ctx2.fillStyle = '#c3cad1';
+    ctx2.beginPath(); ctx2.ellipse(p.x, p.y, 8, 4, 0, 0, Math.PI * 2); ctx2.fill();
+    ctx2.fillStyle = '#7fc1dd';
+    ctx2.beginPath(); ctx2.ellipse(p.x, p.y - 1, 5, 2.5, 0, 0, Math.PI * 2); ctx2.fill();
+    ctx2.strokeStyle = 'rgba(180,220,235,0.8)'; ctx2.lineWidth = 1.4;
+    ctx2.beginPath(); ctx2.moveTo(p.x, p.y - 2); ctx2.lineTo(p.x, p.y - 9); ctx2.stroke();
+  }
+  function drawMound(ctx2, tx, ty, seed, s) {
+    const p = C.worldToScreen(tx, ty, 0);
+    const rx = 9 * s, ry = rx * 0.55;
+    ctx2.fillStyle = 'rgba(' + C.PAL.shadow + ',0.14)';
+    ctx2.beginPath(); ctx2.ellipse(p.x - 2, p.y + 1, rx, ry * 0.7, 0, 0, Math.PI * 2); ctx2.fill();
+    ctx2.fillStyle = (seed & 1) ? '#8a7d4a' : '#9a8b52';
+    ctx2.beginPath(); ctx2.ellipse(p.x, p.y - ry * 0.5, rx, ry, 0, 0, Math.PI * 2); ctx2.fill();
+    ctx2.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx2.beginPath(); ctx2.ellipse(p.x - rx * 0.3, p.y - ry * 0.8, rx * 0.4, ry * 0.4, 0, 0, Math.PI * 2); ctx2.fill();
+    const bits = ['#b94f3e', '#3f6f9e', '#c8a84b'];
+    for (let i = 0; i < 3; i++) {
+      ctx2.fillStyle = bits[(seed >> (i * 2)) % bits.length];
+      ctx2.fillRect(p.x + ((seed >> i) % 7) - 3, p.y - 2 - i, 2, 2);
+    }
+  }
+
+  function addParcelZone(list, d, block, p) {
+    const po = C.parcelOrigin(block, p);
+    const seed = C.hash32(d.key + ':zone:' + block + ':' + p);
+    const r = seed % 10;
+    const patchDepth = C.depthKey(po.tx + 0.05, po.ty + 0.05); // flat ground sits behind features
+    const tree = (sx, sy, sd) => list.push({
+      depth: C.depthKey(po.tx + sx, po.ty + sy),
+      draw: (ctx2) => drawTree(ctx2, po.tx + sx, po.ty + sy, sd),
+    });
+    const push = (sx, sy, draw) => list.push({ depth: C.depthKey(po.tx + sx, po.ty + sy), draw });
+    if (r < 4) {                                   // park: a few trees, maybe a pond
+      tree(0.6, 0.7, seed); tree(1.4, 1.3, seed >>> 5);
+      if ((seed >>> 3) & 1) push(1.4, 0.7, (c) => drawPond(c, po.tx + 1.4, po.ty + 0.7));
+    } else if (r < 6) {                            // grove: dense trees
+      tree(0.55, 0.6, seed); tree(1.3, 0.7, seed >>> 4);
+      tree(0.8, 1.4, seed >>> 8); tree(1.5, 1.45, seed >>> 12);
+    } else if (r < 8) {                            // plaza: paved square + fountain/trees
+      list.push({ depth: patchDepth, draw: (c) => C.drawDiamond(c, po.tx + 0.15, po.ty + 0.15, 1.7, 1.7, C.PAL.plaza, 'rgba(0,0,0,0.06)') });
+      if ((seed >> 2) & 1) push(1, 1, (c) => drawFountain(c, po.tx + 1, po.ty + 1));
+      else { tree(0.5, 0.5, seed); tree(1.5, 1.5, seed >>> 6); }
+    } else if (r < 9) {                            // open lawn: leave the grass bare
+      /* nothing */
+    } else {                                       // landfill: dirt + mounds + debris
+      list.push({ depth: patchDepth, draw: (c) => C.drawDiamond(c, po.tx + 0.1, po.ty + 0.1, 1.8, 1.8, C.PAL.dirt, 'rgba(0,0,0,0.08)') });
+      push(0.75, 0.8, (c) => drawMound(c, po.tx + 0.75, po.ty + 0.8, seed, 1));
+      push(1.4, 1.35, (c) => drawMound(c, po.tx + 1.4, po.ty + 1.35, seed >>> 7, 0.8));
+    }
+  }
+
+  function collectParkDrawables(list) {
+    for (const d of C.districts.values()) {
+      const blocks = d.blocks || [];
+      const lotCount = (d.lots || []).length;
+      for (let bi = 0; bi < blocks.length; bi++) {
+        const usedParcels = Math.max(0, Math.min(C.LOTS_PER_BLOCK, lotCount - bi * C.LOTS_PER_BLOCK));
+        for (let p = usedParcels; p < C.LOTS_PER_BLOCK; p++) addParcelZone(list, d, blocks[bi], p);
+      }
+    }
+  }
+
+  // ---- Scene draw list --------------------------------------------------------------
+  function collectLotDrawables(list, now) {
+    for (const d of C.districts.values()) {
+      for (const lot of d.lots || []) {
+        if (!lot) continue;
+        list.push({
+          depth: C.lotDepth(lot),
+          draw: (ctx2) => {
+            C.drawLot(ctx2, lot, d, camera.zoom);
+            if (lot.state === 'construction') C.drawCrane(ctx2, lot, now);
+          },
+        });
+      }
+    }
+  }
+
+  // ---- Main loop ---------------------------------------------------------------------
+  let lastT = 0;
+  let running = false;
+
+  function frame(now) {
+    if (!running) return;
+    const dt = Math.min(0.1, lastT ? (now - lastT) / 1000 : 0.016);
+    lastT = now;
+
+    if (C.getGroundVersion() !== lastGroundVersion) rebuildGround();
+
+    resize();
+    camera.update(dt);
+    C.updateCitizens(dt, now);
+
+    const dpr = window.devicePixelRatio || 1;
+    const vt = camera.viewTransform();
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    // world transform: world px -> canvas px
+    ctx.setTransform(dpr * vt.zoom, 0, 0, dpr * vt.zoom, dpr * vt.offX, dpr * vt.offY);
+
+    // ground
+    if (groundCanvas && groundMeta) {
+      ctx.drawImage(
+        groundCanvas,
+        groundMeta.minX, groundMeta.minY,
+        groundCanvas.width / groundMeta.res, groundCanvas.height / groundMeta.res
+      );
+    }
+
+    // cast-shadow pass — flat on the ground, under every building so towers
+    // shade their neighbours (kept separate from the sprite cache).
+    for (const d of C.districts.values()) {
+      for (const lot of d.lots || []) {
+        if (lot) C.drawLotShadow(ctx, lot);
+      }
+    }
+
+    // depth-sorted scene
+    const list = [];
+    collectLotDrawables(list, now);
+    collectParkDrawables(list);
+    C.collectCitizenDrawables(list, now);
+    list.sort((a, b) => a.depth - b.depth);
+    for (const d of list) d.draw(ctx);
+
+    // effects on top
+    C.fx.updateAndDraw(ctx, dt, now);
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---- City event plumbing (called from client.js) --------------------------------------
+  function applyCitySnapshot(city) {
+    C.applyCity(city);
+    camera.setBounds(C.worldBounds());
+  }
+
+  function applyCityDelta(msg) {
+    const res = C.applyCityDelta(msg);
+    if (!res) return;
+    const { event, lot } = res;
+    if (event === 'complete') {
+      C.invalidateLot(lot.id);
+      const pl = C.lotPlacement(lot);
+      const zTop = ((lot.building && lot.building.floors) || 1) * C.FLOOR_H;
+      C.fx.spawnConfetti(pl.tx + pl.w / 2, pl.ty + pl.d / 2, zTop);
+    } else if (event === 'incident') {
+      const pl = C.lotPlacement(lot);
+      const stage = C.stageOf(lot);
+      const zTop = (stage.built || 0) * C.FLOOR_H;
+      C.fx.startSmoke(lot.id, pl.tx + pl.w / 2, pl.ty + pl.d / 2, zTop, 30_000);
+    } else if (event === 'groundbreak') {
+      // New lot OR a renovation pass on an existing building — bust any cached
+      // sprite (a prior 'done' sprite would otherwise render the old height).
+      C.invalidateLot(lot.id);
+      camera.setBounds(C.worldBounds());
+    }
+  }
+
+  function start() {
+    if (running) return;
+    running = true;
+    resize();
+    rebuildGround();
+    requestAnimationFrame((t) => { lastT = t; frame(t); });
+  }
+
+  C.render = {
+    start,
+    // entity stream
+    applySnapshot: (entities) => {
+      C.applyCitizenSnapshot(entities);
+    },
+    spawnSprite: (entity, animate) => C.spawnCitizen(entity, animate),
+    updateSprite: (entity) => C.updateCitizen(entity),
+    removeSprite: (id) => C.removeCitizen(id),
+    setAggregates: (a) => C.setAggregates(a),
+    // city stream
+    applyCitySnapshot,
+    applyCityDelta,
+    counts: () => C.citizenCounts(),
+    camera,
+  };
+})();

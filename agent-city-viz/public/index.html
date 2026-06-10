@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent City</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- The single canvas the whole isometric city renders to (DPR-aware). -->
+  <canvas id="city-canvas"></canvas>
+
+  <!-- Atmospheric vignette: darkens the frame corners to focus the eye on the
+       city. Sits above the scene, below the HUD; never intercepts input. -->
+  <div id="atmos"></div>
+
+  <!-- HUD: passive readouts, light Cities Skylines-style UI -->
+  <div id="hud-title" class="panel">
+    <div class="city-name">AGENT CITY</div>
+    <div id="status" class="status">BOOTING…</div>
+  </div>
+
+  <div id="hud-stats" class="panel">
+    <div class="stat"><span class="stat-k">POPULATION</span><span id="hud-pop" class="stat-v">0</span></div>
+    <div class="stat"><span class="stat-k">CREWS</span><span id="hud-crews" class="stat-v">0</span></div>
+    <div class="stat"><span class="stat-k">BUILD RATE</span><span id="hud-rate" class="stat-v">0</span></div>
+    <div class="stat"><span class="stat-k">INCIDENTS</span><span id="hud-inc" class="stat-v">0%</span></div>
+    <div class="stat"><span class="stat-k">BUILDINGS</span><span id="hud-bld" class="stat-v">0</span></div>
+  </div>
+
+  <div id="hud-districts" class="panel">
+    <div class="panel-head">DISTRICTS</div>
+    <div id="district-list"></div>
+  </div>
+
+  <!-- Modules. Order matters: helpers before consumers. -->
+  <script src="config.js"></script>
+  <script src="iso.js"></script>
+  <script src="citymodel.js"></script>
+  <script src="buildings.js"></script>
+  <script src="effects.js"></script>
+  <script src="citizens.js"></script>
+  <script src="render.js"></script>
+  <script src="demo.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>

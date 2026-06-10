@@ -1,7 +1,7 @@
 {
-  "name": "death-star-viz",
+  "name": "agent-city-viz",
   "version": "1.0.0",
-  "description": "Real-time 8-bit Death Star cutaway visualization of Claude Code agents working across projects.",
+  "description": "Real-time isometric city visualization of Claude Code agents: tool activity constructs a persistent, ever-growing skyline.",
   "type": "module",
   "main": "server/index.js",
   "scripts": {
