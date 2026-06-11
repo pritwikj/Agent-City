@@ -89,6 +89,131 @@
     return [...out];
   }
 
+  // ---- Organic growth ----------------------------------------------------------
+  // A city does NOT pack one block to capacity before breaking ground on the
+  // next — it sprawls. New buildings open frontier blocks while those are still
+  // mostly empty, and infill prefers the denser core so suburbs stay sparse.
+  // MIRROR of server/city.js (chooseSite / pickExpansionSlot / weightedPick) —
+  // change both together.
+  const SPREAD_TARGET = 3;          // avg buildings/block before infill beats expansion
+  const EXPAND_PROB = 0.78;         // strong frontier bias -> sprawl (~1.3 bldgs/block steady state)
+  const INFILL_EXPAND_PROB = 0.12;  // once a block is dense, opening a new one is rare
+  const HOOD_INFILL_W = { downtown: 6, inner: 4, upper: 3, middle: 3, working: 2.5, rural: 0.7 };
+  const PARCEL_W = [1, 2, 1, 2, 4, 2, 1, 2, 1]; // center-out infill preference
+  // Frontier-growth knobs: expansion grows from the EDGES of existing blocks in
+  // seeded-random directions (NOT strictly inward-out along the spiral), so the
+  // build ORDER is organic — a suburb pocket can develop before downtown, and
+  // vice-versa. The density gradient still emerges later, from infill weighting.
+  const LEAP_PROB = 0.11;           // chance a new block founds a detached satellite town
+  const INWARD_PULL = 0.9;          // light centering — loose enough to let the metro sprawl outward
+
+  /** block slot -> Set(parcel index) currently occupied, from a district's lots. */
+  function parcelUsage(d) {
+    const used = new Map();
+    for (const lot of (d && d.lots) || []) {
+      if (!lot) continue;
+      let s = used.get(lot.block);
+      if (!s) { s = new Set(); used.set(lot.block, s); }
+      s.add(lot.parcel);
+    }
+    return used;
+  }
+
+  /** Seeded weighted pick over `items`; weightOf(item) -> non-negative weight. */
+  function weightedPick(items, weightOf, seed) {
+    let total = 0;
+    for (const it of items) total += weightOf(it);
+    if (total <= 0) return items[0];
+    let roll = ((seed >>> 0) % 100000) / 100000 * total;
+    for (const it of items) {
+      roll -= weightOf(it);
+      if (roll < 0) return it;
+    }
+    return items[items.length - 1];
+  }
+
+  /**
+   * Pick a NEW (empty) block for the city to grow onto. Grows from the edges of
+   * existing development in a seeded-random direction — not strictly inward-out
+   * — so neighborhoods come up in an organic order. `isFree(slot)` guards against
+   * reusing a claimed slot. MIRROR of server/city.js pickExpansionSlot().
+   */
+  function pickExpansionSlot(usedSlots, seed, isFree) {
+    const C = window.CITY;
+    const usedPos = new Set();
+    let maxRing = 0;
+    for (const s of usedSlots) {
+      const { bx, by } = C.spiralSlot(s);
+      usedPos.add(bx + ',' + by);
+      maxRing = Math.max(maxRing, Math.abs(bx), Math.abs(by));
+    }
+    // satellite leap: occasionally found a detached settlement out past the edge
+    if ((seed % 100) / 100 < LEAP_PROB) {
+      const r = maxRing + 1 + (seed % 3);
+      const ang = ((seed >>> 5) % 360) * Math.PI / 180;
+      const bx = Math.round(r * Math.cos(ang)), by = Math.round(r * Math.sin(ang));
+      if (!usedPos.has(bx + ',' + by)) {
+        const slot = C.slotForPos(bx, by);
+        if (isFree(slot)) return slot;
+      }
+    }
+    // frontier candidates: empty 8-neighbours of any built cell
+    const list = [];
+    const seen = new Set();
+    for (const s of usedSlots) {
+      const { bx, by } = C.spiralSlot(s);
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+        if (!dx && !dy) continue;
+        const nx = bx + dx, ny = by + dy, k = nx + ',' + ny;
+        if (usedPos.has(k) || seen.has(k)) continue;
+        seen.add(k);
+        const slot = C.slotForPos(nx, ny);
+        if (isFree(slot)) list.push({ slot, bx: nx, by: ny });
+      }
+    }
+    if (!list.length) { let s = 0; while (!isFree(s)) s++; return s; }
+    // gentle inward pull (keeps the metro centred) x per-cell seeded jitter (so
+    // the growth direction varies) — deliberately NO downtown class bias here,
+    // so the build ORDER is organic; density bias lives in infill instead.
+    return weightedPick(list, (c) => {
+      const ring = Math.max(Math.abs(c.bx), Math.abs(c.by));
+      const pull = 1 + INWARD_PULL / (1 + ring);
+      const jit = 0.35 + ((C.hash32('exp:' + c.bx + ',' + c.by + ':' + seed) % 1000) / 1000) * 0.65;
+      return pull * jit;
+    }, seed >>> 3).slot;
+  }
+
+  /**
+   * Decide where the next building breaks ground. Returns { blockSlot, parcel }
+   * and MUTATES d.blocks when it grows onto a new block. `isFree(slot)` reports
+   * whether a slot is unclaimed (across all districts). Reads only d.lots, so it
+   * works mid-stream before the new lot is pushed.
+   */
+  function chooseSite(d, seed, isFree) {
+    const C = window.CITY;
+    const n = (d.lots || []).length;
+    const used = parcelUsage(d);
+    const infill = (d.blocks || []).filter((b) => {
+      const s = used.get(b);
+      return (s ? s.size : 0) < C.LOTS_PER_BLOCK;
+    });
+    const avgOcc = n / Math.max(1, (d.blocks || []).length);
+    const r = (seed % 1000) / 1000;
+    const expandProb = avgOcc < SPREAD_TARGET ? EXPAND_PROB : INFILL_EXPAND_PROB;
+    let blockSlot;
+    if (infill.length === 0 || r < expandProb) {
+      blockSlot = pickExpansionSlot(d.blocks || [], seed, isFree);
+      d.blocks.push(blockSlot);
+    } else {
+      blockSlot = weightedPick(infill, (b) => HOOD_INFILL_W[C.neighborhoodFor(b).klass] || 1, seed >>> 7);
+    }
+    const taken = used.get(blockSlot);
+    const free = [];
+    for (let p = 0; p < C.LOTS_PER_BLOCK; p++) if (!taken || !taken.has(p)) free.push(p);
+    const parcel = weightedPick(free, (p) => PARCEL_W[p] || 1, seed >>> 13);
+    return { blockSlot, parcel };
+  }
+
   // ---- Layout solver ------------------------------------------------------------
 
   /** NW tile of a parcel (0..8, serpentine over the 3x3 interior grid). */
@@ -155,6 +280,15 @@
         if (p.y > maxY) maxY = p.y;
       }
     }
+    // include the ambient infrastructure (beltway, rail loop, airport) so the
+    // camera autofit frames the whole metro, not just the built blocks.
+    if (C.infra && C.infra.screenExtent) {
+      const e = C.infra.screenExtent();
+      if (e.minX < minX) minX = e.minX;
+      if (e.minY < minY) minY = e.minY;
+      if (e.maxX > maxX) maxX = e.maxX;
+      if (e.maxY > maxY) maxY = e.maxY;
+    }
     minY -= maxFloorsSeen * C.FLOOR_H + C.TILE_H; // room for the tallest tower
     return { minX, minY, maxX, maxY };
   }
@@ -168,6 +302,8 @@
     lotById,
     activeLot,
     usedBlocks,
+    parcelUsage,
+    chooseSite,
     parcelOrigin,
     lotPlacement,
     ringTiles,

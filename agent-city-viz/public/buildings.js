@@ -111,6 +111,7 @@
   const CAT_STYLE = {
     res:     { style: 'brick',    hue: 24,  s: 36, l: 56 },  // warm brick / terracotta
     com:     { style: 'glass',    hue: 205, s: 24, l: 62 },  // cool glass
+    retail:  { style: 'stucco',   hue: 40,  s: 24, l: 70 },  // light stucco storefront
     school:  { style: 'brick',    hue: 8,   s: 32, l: 56 },  // brick red
     power:   { style: 'concrete', hue: 212, s: 8,  l: 64 },  // bare concrete
     transit: { style: 'concrete', hue: 200, s: 16, l: 64 },  // steel grey-blue
@@ -118,6 +119,7 @@
     hospital:{ style: 'glass',    hue: 192, s: 10, l: 80 },  // clean white / teal glass
     fire:    { style: 'brick',    hue: 4,   s: 40, l: 50 },  // fire-engine red brick
     prison:  { style: 'concrete', hue: 36,  s: 6,  l: 58 },  // drab tan concrete
+    farm:    { style: 'brick',    hue: 30,  s: 30, l: 58 },  // homestead clapboard
   };
   function buildingStyle(lot, _district) {
     const b = lot.building || {};
@@ -125,7 +127,14 @@
     const type = b.type || 'office';
     const cat = C.buildingCategory(type);
     const cs = CAT_STYLE[cat] || CAT_STYLE.com;
-    const hue = (cs.hue + ((seed >>> 12) % 25) - 12 + 360) % 360; // ±12 per-seed
+    let hue = (cs.hue + ((seed >>> 12) % 25) - 12 + 360) % 360; // ±12 per-seed
+    // SUBDIVISION COHESION: every house on a block shares one palette so a
+    // suburban/rural block reads as a planned community of like homes rather
+    // than a row of mismatched buildings (render-only; does not touch seeds).
+    if (type === 'house' && typeof lot.block === 'number') {
+      const blockHue = (CAT_STYLE.res.hue + (C.hash32('subdiv:' + lot.block) % 34) - 17 + 360) % 360;
+      hue = (blockHue + ((seed >>> 12) % 7) - 3 + 360) % 360; // tight per-home wobble
+    }
     const col = { h: hue, s: cs.s, l: cs.l + ((seed >>> 4) % 9) - 4 };
     // neighborhood cleanliness: grimier/desaturated in poorer areas, a touch
     // brighter downtown/uptown. Subtle so the category palette still dominates.
@@ -394,6 +403,386 @@
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
   }
 
+  // Police station: a clean civic hall with a navy signage band over the door
+  // and a blue beacon on a short rooftop mast.
+  function paintPolice(ctx, pl, st, floors) {
+    const { tx, ty, w, d } = pl;
+    const h = floors * C.FLOOR_H;
+    drawBox(ctx, tx, ty, w, d, 0, h, st.col);
+    drawWindows(ctx, tx, ty, w, d, 0, floors, st);
+    drawRoofCap(ctx, tx, ty, w, d, h, st);
+    // navy signage band high on the sunny (SW) face
+    facePanel(ctx, 'left', tx, ty, w, d, w * 0.1, w * 0.9, h * 0.82, h * 0.93, '#1f3566');
+    // glass entrance at street level
+    facePanel(ctx, 'left', tx, ty, w, d, w * 0.36, w * 0.64, 0, h * 0.22,
+      'rgba(150,190,220,0.55)', 'rgba(230,235,240,0.3)');
+    // rooftop police beacon
+    const b = w2s(tx + w * 0.5, ty + d * 0.5, h);
+    ctx.strokeStyle = '#9aa2ab'; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(b.x, b.y - 13); ctx.stroke();
+    ctx.fillStyle = 'rgba(120,170,255,0.45)';
+    ctx.beginPath(); ctx.arc(b.x, b.y - 14, 4.4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#2f6fe0';
+    ctx.beginPath(); ctx.arc(b.x, b.y - 14, 2.3, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // Hospital: a clean white block with a big red cross on the wall and a marked
+  // rooftop helipad.
+  function paintHospital(ctx, pl, st, floors) {
+    const { tx, ty, w, d } = pl;
+    const h = floors * C.FLOOR_H;
+    drawBox(ctx, tx, ty, w, d, 0, h, st.col);
+    drawWindows(ctx, tx, ty, w, d, 0, floors, st);
+    drawRoofCap(ctx, tx, ty, w, d, h, st);
+    // red cross on a white plate, high on the SW face
+    const cx = w / 2;
+    facePanel(ctx, 'left', tx, ty, w, d, cx - 0.5, cx + 0.5, h * 0.46, h * 0.86, 'rgba(252,252,252,0.94)');
+    facePanel(ctx, 'left', tx, ty, w, d, cx - 0.15, cx + 0.15, h * 0.52, h * 0.80, '#d8463a'); // vertical bar
+    facePanel(ctx, 'left', tx, ty, w, d, cx - 0.33, cx + 0.33, h * 0.61, h * 0.71, '#d8463a'); // horizontal bar
+    // rooftop helipad
+    const c = w2s(tx + w / 2, ty + d / 2, h);
+    ctx.fillStyle = 'rgba(44,48,54,0.82)';
+    ctx.beginPath(); ctx.ellipse(c.x, c.y, 11, 5.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(240,228,120,0.9)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.ellipse(c.x, c.y, 8.4, 4.2, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(245,245,245,0.95)'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(c.x - 3, c.y - 2.3); ctx.lineTo(c.x - 3, c.y + 2.3);
+    ctx.moveTo(c.x + 3, c.y - 2.3); ctx.lineTo(c.x + 3, c.y + 2.3);
+    ctx.moveTo(c.x - 3, c.y); ctx.lineTo(c.x + 3, c.y);
+    ctx.stroke();
+  }
+
+  // Fire station: red-brick hall with a tall hose-drying tower at the back and
+  // engine bay doors across the front.
+  function paintFireStation(ctx, pl, st, floors) {
+    const { tx, ty, w, d } = pl;
+    const h = floors * C.FLOOR_H;
+    // drill / hose tower at the NE (back) corner so it rises behind the hall
+    drawBox(ctx, tx + w * 0.04, ty + d * 0.04, Math.min(0.7, w * 0.34), Math.min(0.7, d * 0.34),
+      0, h + C.FLOOR_H * 2.2, { h: st.col.h, s: st.col.s, l: st.col.l - 7 });
+    drawBox(ctx, tx, ty, w, d, 0, h, st.col);
+    drawWindows(ctx, tx, ty, w, d, 0, floors, st);
+    drawRoofCap(ctx, tx, ty, w, d, h, st);
+    // engine bay doors along the SW front
+    const bays = w >= 2 ? 2 : 1;
+    for (let i = 0; i < bays; i++) {
+      const p0 = (i + 0.12) / bays * w, p1 = (i + 0.88) / bays * w;
+      facePanel(ctx, 'left', tx, ty, w, d, p0, p1, 0, h * 0.46, 'rgba(38,42,50,0.8)', 'rgba(220,224,228,0.22)');
+      facePanel(ctx, 'left', tx, ty, w, d, p0, p1, h * 0.46, h * 0.52, '#9c2f24'); // red header
+    }
+  }
+
+  // Prison: a drab low cellblock set in a paved compound, ringed by corner
+  // watchtowers (the silhouette that reads as "prison" at iso scale).
+  function drawWatchtower(ctx, cx, cy, hgt) {
+    drawBox(ctx, cx - 0.12, cy - 0.12, 0.24, 0.24, 0, hgt, { h: 34, s: 8, l: 46 });          // post
+    drawBox(ctx, cx - 0.26, cy - 0.26, 0.52, 0.52, hgt, C.FLOOR_H * 0.9, { h: 34, s: 10, l: 62 }); // cabin
+    const top = w2s(cx, cy, hgt + C.FLOOR_H * 0.9);
+    ctx.fillStyle = 'rgba(255,236,150,0.92)';
+    ctx.beginPath(); ctx.arc(top.x, top.y - 2, 1.7, 0, Math.PI * 2); ctx.fill();
+  }
+  function paintPrison(ctx, pl, st, floors) {
+    const { tx, ty, w, d } = pl;
+    const h = floors * C.FLOOR_H;
+    const towerH = h + C.FLOOR_H * 1.6;
+    // paved compound yard
+    drawDiamond(ctx, tx - 0.05, ty - 0.05, w + 0.1, d + 0.1, 'rgba(150,148,138,0.55)', 'rgba(0,0,0,0.12)');
+    // back watchtower (drawn first; it sits behind the cellblock)
+    drawWatchtower(ctx, tx + 0.12, ty + 0.12, towerH);
+    // cellblock, inset from the perimeter
+    drawBox(ctx, tx + 0.28, ty + 0.28, w - 0.56, d - 0.56, 0, h, st.col);
+    drawWindows(ctx, tx + 0.28, ty + 0.28, w - 0.56, d - 0.56, 0, floors, st);
+    drawRoofCap(ctx, tx + 0.28, ty + 0.28, w - 0.56, d - 0.56, h, st);
+    // front watchtowers (after the block, so they occlude it correctly)
+    drawWatchtower(ctx, tx + w - 0.12, ty + d - 0.12, towerH);
+    drawWatchtower(ctx, tx + 0.12, ty + d - 0.12, towerH);
+  }
+
+  // ---- Commercial tower archetypes (office / skyscraper variety) -------------
+  // A real downtown is a mix of materials, massings and crowns, so every
+  // com-category building rolls an archetype from its seed: a glass/teal/bronze/
+  // silver/limestone material, a slab / setback / tapered massing, a curtain /
+  // banded / piered facade, and one of several roof crowns. Deterministic, so a
+  // building always renders the same; sprite-cached like everything else.
+  const TOWER_MAT = [
+    { h: 205, s: 26, l: 60, glassH: 205 }, // blue glass
+    { h: 172, s: 22, l: 58, glassH: 168 }, // teal / green glass
+    { h: 34,  s: 28, l: 52, glassH: 36  }, // bronze
+    { h: 210, s: 7,  l: 70, glassH: 205 }, // silver / white metal
+    { h: 30,  s: 14, l: 66, glassH: 42  }, // warm limestone / stone
+  ];
+
+  function clampInset(pl, inset) {
+    const lim = (Math.min(pl.w, pl.d) - 0.6) / 2; // keep each segment >= 0.6 tiles wide
+    return Math.max(0, Math.min(inset, lim));
+  }
+
+  // Vertical massing as a stack of {z0, f (floors), inset} segments.
+  function towerSegments(floors, massing, seed) {
+    const FH = C.FLOOR_H;
+    if (massing === 0 || floors < 4) return [{ z0: 0, f: floors, inset: 0 }];
+    if (massing === 1) {                       // setbacks (2 or 3 steps)
+      if (floors >= 14 && ((seed >>> 14) & 1)) {
+        const a = Math.round(floors * 0.55), b = Math.round(floors * 0.8);
+        return [
+          { z0: 0, f: a, inset: 0 },
+          { z0: a * FH, f: b - a, inset: 0.16 },
+          { z0: b * FH, f: floors - b, inset: 0.34 },
+        ];
+      }
+      const a = Math.round(floors * 0.68);
+      return [{ z0: 0, f: a, inset: 0 }, { z0: a * FH, f: floors - a, inset: 0.22 }];
+    }
+    const n = 4, per = floors / n, segs = [];   // gentle continuous taper
+    for (let i = 0; i < n; i++) {
+      const lo = Math.round(i * per), hi = Math.round((i + 1) * per);
+      if (hi > lo) segs.push({ z0: lo * FH, f: hi - lo, inset: i * 0.12 });
+    }
+    return segs.length ? segs : [{ z0: 0, f: floors, inset: 0 }];
+  }
+
+  // A glass facade with curtain / banded / piered treatments + material tint.
+  function towerFacade(ctx, side, tx, ty, w, d, z0, floors, st, mat, variant) {
+    const tiles = side === 'left' ? w : d;
+    const H = floors * C.FLOOR_H;
+    const tl = edgePt(side, tx, ty, w, d, 0, z0 + H);
+    const tr = edgePt(side, tx, ty, w, d, tiles, z0 + H);
+    const br = edgePt(side, tx, ty, w, d, tiles, z0);
+    const bl = edgePt(side, tx, ty, w, d, 0, z0);
+    const reflect = side === 'left' ? 0.5 : 0.3;
+    poly(ctx, [tl, tr, br, bl]);
+    ctx.fillStyle = vGrad(ctx, [tl, tr, br, bl],
+      'hsla(' + mat.glassH + ',42%,84%,' + reflect + ')',
+      'hsla(' + mat.glassH + ',30%,40%,0.34)');
+    ctx.fill();
+
+    if (variant === 'banded') {                // horizontal spandrel band per floor
+      for (let f = 0; f < floors; f++) {
+        fillCell(ctx, side, tx, ty, w, d, z0, f, 0, tiles, 0.0, 0.34,
+          'hsla(' + mat.h + ',' + mat.s + '%,' + Math.max(8, mat.l - 18) + '%,0.85)');
+      }
+    } else if (variant === 'piers') {          // vertical solid piers
+      for (let c = 0; c <= tiles; c++) {
+        const p0 = Math.max(0, c - 0.12), p1 = Math.min(tiles, c + 0.12);
+        if (p1 <= p0) continue;
+        const a = edgePt(side, tx, ty, w, d, p0, z0 + H), b = edgePt(side, tx, ty, w, d, p1, z0 + H);
+        const cc = edgePt(side, tx, ty, w, d, p1, z0), e = edgePt(side, tx, ty, w, d, p0, z0);
+        poly(ctx, [a, b, cc, e]);
+        ctx.fillStyle = 'hsla(' + mat.h + ',' + Math.max(0, mat.s - 6) + '%,' + (mat.l + 6) + '%,0.95)';
+        ctx.fill();
+      }
+    }
+    // mullion grid
+    ctx.strokeStyle = 'rgba(236,243,248,0.25)'; ctx.lineWidth = 0.6;
+    const cols = Math.max(1, Math.round(tiles * 2));
+    ctx.beginPath();
+    for (let i = 0; i <= cols; i++) {
+      const p = (i / cols) * tiles;
+      const a = edgePt(side, tx, ty, w, d, p, z0 + H), b = edgePt(side, tx, ty, w, d, p, z0);
+      ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+    }
+    for (let f = 0; f <= floors; f++) {
+      const z = z0 + f * C.FLOOR_H;
+      const a = edgePt(side, tx, ty, w, d, 0, z), b = edgePt(side, tx, ty, w, d, tiles, z);
+      ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+    }
+    ctx.stroke();
+    // a scatter of lit windows once complete
+    if (st.complete) {
+      const lit = st.seed >>> 3;
+      for (let f = 0; f < floors; f++) {
+        for (let c = 0; c < cols; c++) {
+          if (((lit >>> ((f * 5 + c * 3) % 29)) & 7) !== 0) continue;
+          fillCell(ctx, side, tx, ty, w, d, z0, f, (c / cols) * tiles, ((c + 1) / cols) * tiles, 0.14, 0.9,
+            'rgba(255,238,170,0.7)');
+        }
+      }
+    }
+  }
+
+  function drawCrown(ctx, pl, h, col, mat, seed, type) {
+    const { tx, ty, w, d } = pl;
+    const cx = tx + w / 2, cy = ty + d / 2;
+    const st = { hue: mat.h, seed };
+    const kinds = type === 'skyscraper'
+      ? ['mech', 'antenna', 'spire', 'pyramid', 'stepped', 'antenna']
+      : ['flat', 'flat', 'mech', 'antenna'];
+    const crown = kinds[(seed >>> 11) % kinds.length];
+    const FH = C.FLOOR_H;
+
+    if (crown === 'pyramid') {                  // tapered glass cap to an apex
+      const ph = FH * Math.max(2.2, Math.min(w, d) * 1.5);
+      const apex = w2s(cx, cy, h + ph);
+      const eT = w2s(tx + w, ty, h), sT = w2s(tx + w, ty + d, h), wT = w2s(tx, ty + d, h);
+      poly(ctx, [wT, sT, apex]); ctx.fillStyle = hsl(mat.glassH, 30, 46); ctx.fill();
+      poly(ctx, [sT, eT, apex]); ctx.fillStyle = hsl(mat.glassH, 32, 37); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(wT.x, wT.y); ctx.lineTo(apex.x, apex.y); ctx.lineTo(eT.x, eT.y); ctx.stroke();
+      ctx.strokeStyle = '#aeb6bf'; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(apex.x, apex.y); ctx.lineTo(apex.x, apex.y - 13); ctx.stroke();
+      ctx.fillStyle = '#e0524a'; ctx.beginPath(); ctx.arc(apex.x, apex.y - 14, 1.8, 0, Math.PI * 2); ctx.fill();
+      return;
+    }
+
+    drawRoofCap(ctx, tx, ty, w, d, h, st); // flat membrane under the rest
+
+    if (crown === 'flat') {
+      drawBox(ctx, tx + w * 0.36, ty + d * 0.36, w * 0.28, d * 0.28, h, FH * 0.6, { h: mat.h, s: 6, l: mat.l + 4 });
+    } else if (crown === 'mech') {              // mechanical penthouse + vent + mast
+      drawBox(ctx, tx + w * 0.18, ty + d * 0.2, w * 0.46, d * 0.42, h, FH * 1.4, { h: mat.h, s: 8, l: Math.max(8, mat.l - 4) });
+      drawBox(ctx, tx + w * 0.6, ty + d * 0.5, w * 0.22, d * 0.26, h, FH * 0.7, { h: mat.h, s: 6, l: mat.l + 2 });
+      const a = w2s(tx + w * 0.4, ty + d * 0.42, h + FH * 1.4);
+      ctx.strokeStyle = '#9aa2ab'; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(a.x, a.y - 11); ctx.stroke();
+    } else if (crown === 'antenna') {           // lattice mast (+ guy wires, beacon)
+      const mast = type === 'skyscraper' ? 34 : 18;
+      const base = w2s(cx, cy, h), tip = { x: base.x, y: base.y - mast };
+      ctx.strokeStyle = '#aeb6bf'; ctx.lineWidth = type === 'skyscraper' ? 1.8 : 1.3;
+      ctx.beginPath(); ctx.moveTo(base.x, base.y); ctx.lineTo(tip.x, tip.y); ctx.stroke();
+      ctx.strokeStyle = 'rgba(150,158,167,0.5)'; ctx.lineWidth = 0.5;
+      for (const s of [-1, 1]) {
+        const g = w2s(cx + s * w * 0.3, cy + s * d * 0.3, h);
+        ctx.beginPath(); ctx.moveTo(tip.x, tip.y); ctx.lineTo(g.x, g.y); ctx.stroke();
+      }
+      ctx.fillStyle = '#e0524a'; ctx.beginPath(); ctx.arc(tip.x, tip.y + 1, 2, 0, Math.PI * 2); ctx.fill();
+      if ((seed >> 15) & 1) {                   // twin mast
+        const b2 = w2s(cx + w * 0.18, cy + d * 0.18, h);
+        ctx.strokeStyle = '#aeb6bf'; ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.moveTo(b2.x, b2.y); ctx.lineTo(b2.x, b2.y - mast * 0.6); ctx.stroke();
+      }
+    } else if (crown === 'spire') {             // glass crown + needle
+      const ins = 0.28;
+      drawBox(ctx, tx + ins, ty + ins, w - 2 * ins, d - 2 * ins, h, FH * 2, { h: col.h, s: col.s, l: Math.max(8, col.l - 5) });
+      const base = w2s(cx, cy, h + FH * 2);
+      ctx.strokeStyle = '#aeb6bf'; ctx.lineWidth = 1.8;
+      ctx.beginPath(); ctx.moveTo(base.x, base.y); ctx.lineTo(base.x, base.y - 30); ctx.stroke();
+      ctx.fillStyle = '#e0524a'; ctx.beginPath(); ctx.arc(base.x, base.y - 31, 2.2, 0, Math.PI * 2); ctx.fill();
+    } else if (crown === 'stepped') {           // ziggurat
+      drawBox(ctx, tx + w * 0.12, ty + d * 0.12, w * 0.76, d * 0.76, h, FH * 1.1, { h: col.h, s: col.s, l: Math.max(8, col.l - 3) });
+      drawBox(ctx, tx + w * 0.28, ty + d * 0.28, w * 0.44, d * 0.44, h + FH * 1.1, FH, { h: col.h, s: col.s, l: col.l - 1 });
+      const a = w2s(cx, cy, h + FH * 2.1);
+      ctx.strokeStyle = '#aeb6bf'; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(a.x, a.y - 15); ctx.stroke();
+      ctx.fillStyle = '#e0524a'; ctx.beginPath(); ctx.arc(a.x, a.y - 16, 1.8, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  function paintTower(ctx, pl, st, floors, type) {
+    const seed = st.seed;
+    const mat = TOWER_MAT[(seed >>> 2) % TOWER_MAT.length];
+    const col = { h: mat.h, s: mat.s, l: C.clamp(mat.l + ((seed >>> 4) % 7) - 3, 12, 84) };
+    let massing = (seed >>> 5) % 3;             // 0 slab, 1 setback, 2 taper
+    if (type === 'office' && massing === 2) massing = (seed >>> 9) & 1;        // offices: no deep taper
+    if (type === 'skyscraper' && massing === 0 && ((seed >>> 17) & 1)) massing = 1; // towers rarely plain slabs
+    const variant = ['curtain', 'banded', 'piers'][(seed >>> 8) % 3];
+    const segs = towerSegments(floors, massing, seed);
+    for (const sg of segs) {
+      const ins = clampInset(pl, sg.inset);
+      const tx = pl.tx + ins, ty = pl.ty + ins, w = pl.w - 2 * ins, d = pl.d - 2 * ins;
+      drawBox(ctx, tx, ty, w, d, sg.z0, sg.f * C.FLOOR_H, col);
+      for (const side of ['left', 'right']) towerFacade(ctx, side, tx, ty, w, d, sg.z0, sg.f, st, mat, variant);
+    }
+    const top = segs[segs.length - 1];
+    const tIns = clampInset(pl, top.inset);
+    const tpl = { tx: pl.tx + tIns, ty: pl.ty + tIns, w: pl.w - 2 * tIns, d: pl.d - 2 * tIns };
+    drawCrown(ctx, tpl, top.z0 + top.f * C.FLOOR_H, col, mat, seed, type);
+  }
+
+  // ---- Retail (shops / stores / restaurants) ---------------------------------
+  // A low-rise storefront: a ground-floor display window under a striped awning,
+  // a recessed door, optional residence/office floors above, and an illuminated
+  // sign box on the roof. The awning colour reads the retail subtype.
+  const RETAIL = {
+    shop:       { a1: '#3f9e7a', a2: '#83cbb1', sign: { h: 163, s: 45, l: 36 } }, // green grocer/boutique
+    store:      { a1: '#3f74b0', a2: '#8bb2dd', sign: { h: 212, s: 50, l: 40 } }, // blue big-box
+    restaurant: { a1: '#c75a3e', a2: '#e6a085', sign: { h: 14,  s: 62, l: 44 } }, // warm diner
+  };
+  function paintRetail(ctx, pl, st, floors) {
+    const { tx, ty, w, d } = pl;
+    const h = floors * C.FLOOR_H;
+    drawBox(ctx, tx, ty, w, d, 0, h, st.col);
+    // upper floors (the flat/office above the shop) get punched windows; the
+    // ground floor is left bare so the storefront below paints over it cleanly.
+    if (floors > 1) {
+      const lit = st.seed >>> 3;
+      for (const side of ['left', 'right']) {
+        const tiles = side === 'left' ? w : d;
+        for (let f = 1; f < floors; f++) {
+          for (let k = 0; k < tiles; k++) {
+            for (let c = 0; c < 2; c++) {
+              const p0 = k + (c + 0.24) / 2, p1 = k + (c + 0.76) / 2;
+              const on = st.complete && (((lit >>> ((f * 7 + (k * 2 + c) * 3) % 28)) & 3) === 0);
+              fillCell(ctx, side, tx, ty, w, d, 0, f, p0, p1, 0.30, 0.78,
+                on ? 'rgba(255,232,150,0.85)' : 'rgba(46,62,86,0.52)', 'rgba(244,246,248,0.20)');
+            }
+          }
+        }
+      }
+    }
+    drawRoofCap(ctx, tx, ty, w, d, h, st);
+    // storefront on both visible faces (a corner shop reads from either side)
+    const r = RETAIL[st.type] || RETAIL.shop;
+    const gh = Math.min(C.FLOOR_H, h);
+    for (const side of ['left', 'right']) {
+      const tiles = side === 'left' ? w : d;
+      const glass = side === 'left' ? 'rgba(150,196,222,0.64)' : 'rgba(120,162,190,0.5)';
+      facePanel(ctx, side, tx, ty, w, d, tiles * 0.06, tiles * 0.94, gh * 0.10, gh * 0.70, glass, 'rgba(240,244,248,0.30)');
+      facePanel(ctx, side, tx, ty, w, d, tiles * 0.44, tiles * 0.56, 0, gh * 0.64, 'rgba(64,80,98,0.62)'); // door
+      // striped awning band above the glass
+      const segs = Math.max(3, Math.round(tiles * 3));
+      for (let i = 0; i < segs; i++) {
+        const p0 = tiles * 0.03 + tiles * 0.94 * (i / segs);
+        const p1 = tiles * 0.03 + tiles * 0.94 * ((i + 1) / segs);
+        facePanel(ctx, side, tx, ty, w, d, p0, p1, gh * 0.70, gh * 0.90, (i & 1) ? r.a1 : r.a2);
+      }
+    }
+    // illuminated rooftop sign pylon along the front (SW) parapet
+    drawBox(ctx, tx + w * 0.15, ty + d * 0.74, w * 0.70, d * 0.10, h, C.FLOOR_H * 0.8, r.sign);
+  }
+
+  // ---- Farm (rural ground feature: tilled field + homestead + silo) ----------
+  function drawSilo(ctx, cx, cy, hgt) {
+    const base = w2s(cx, cy, 0), top = w2s(cx, cy, hgt);
+    const rr = 5.5;
+    poly(ctx, [{ x: base.x - rr, y: base.y }, { x: top.x - rr, y: top.y }, { x: top.x + rr, y: top.y }, { x: base.x + rr, y: base.y }]);
+    ctx.fillStyle = vGrad(ctx, [{ x: 0, y: top.y }, { x: 0, y: base.y }], 'hsl(40,12%,82%)', 'hsl(40,14%,58%)');
+    ctx.fill();
+    poly(ctx, [{ x: top.x, y: top.y }, { x: top.x + rr, y: top.y }, { x: base.x + rr, y: base.y }, { x: base.x, y: base.y }]);
+    ctx.fillStyle = 'rgba(20,26,34,0.10)'; ctx.fill();
+    // domed cap
+    ctx.fillStyle = '#9aa0a6';
+    ctx.beginPath(); ctx.ellipse(top.x, top.y, rr, rr * 0.5, 0, Math.PI, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.ellipse(top.x, top.y, rr, rr * 0.5, 0, Math.PI, Math.PI * 2); ctx.stroke();
+  }
+  function paintFarm(ctx, pl, st) {
+    const { tx, ty, w, d } = pl;
+    // tilled field over the whole parcel footprint
+    drawDiamond(ctx, tx, ty, w, d, '#b79a68', 'rgba(80,60,30,0.25)');
+    // crop rows: lines parallel to +tx, alternating crop greens
+    const rows = 8;
+    for (let i = 1; i < rows; i++) {
+      const ry = ty + d * (i / rows);
+      const a = w2s(tx + 0.05, ry, 0), b = w2s(tx + w - 0.05, ry, 0);
+      ctx.strokeStyle = (i & 1) ? '#6f9a48' : '#86b35c';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    // a barn/homestead at the NE (back) corner so it sits behind the field rows
+    const hx = tx + 0.1, hy = ty + 0.1, hw = 0.7, hd = 0.7, hh = C.FLOOR_H * 1.4;
+    drawBox(ctx, hx, hy, hw, hd, 0, hh, st.col);
+    // pitched roof on the homestead
+    const rhgt = C.FLOOR_H * 0.9;
+    const apex = w2s(hx + hw / 2, hy + hd / 2, hh + rhgt);
+    const eT = w2s(hx + hw, hy, hh), sT = w2s(hx + hw, hy + hd, hh), wT = w2s(hx, hy + hd, hh);
+    const rhue = (st.hue + 16) % 360;
+    poly(ctx, [wT, sT, apex]); ctx.fillStyle = hsl(rhue, 44, 38); ctx.fill();
+    poly(ctx, [sT, eT, apex]); ctx.fillStyle = hsl(rhue, 46, 30); ctx.fill();
+    // a grain silo beside the barn
+    drawSilo(ctx, tx + 1.55, ty + 0.45, C.FLOOR_H * 2.4);
+  }
+
   // ---- Scaffold wrap (construction) -----------------------------------------------
   function drawScaffold(ctx, tx, ty, w, d, z0, zTop) {
     ctx.strokeStyle = C.PAL.scaffold;
@@ -448,8 +837,8 @@
       ? hsl(96 + ((st.seed >>> 5) % 26) - 12, 40, 64)
       : C.PAL.dirt;
     drawDiamond(ctx, pl.parcelTx, pl.parcelTy, 2, 2, groundCol, 'rgba(0,0,0,0.07)');
-    if (st.complete) {
-      // a hint of paving / planter at the building base
+    if (st.complete && cat !== 'farm') {
+      // a hint of paving / planter at the building base (a farm is open field)
       drawDiamond(ctx, pl.tx - 0.12, pl.ty - 0.12, pl.w + 0.24, pl.d + 0.24, 'rgba(200,205,210,0.55)');
     }
 
@@ -467,6 +856,13 @@
       // civic types have their own silhouette (towers / canopy)
       if (cat === 'power') { paintPowerStation(ctx, pl, st, floors); return; }
       if (cat === 'transit') { paintTransit(ctx, pl, st, floors); return; }
+      if (cat === 'police') { paintPolice(ctx, pl, st, floors); return; }
+      if (cat === 'hospital') { paintHospital(ctx, pl, st, floors); return; }
+      if (cat === 'fire') { paintFireStation(ctx, pl, st, floors); return; }
+      if (cat === 'prison') { paintPrison(ctx, pl, st, floors); return; }
+      if (cat === 'retail') { paintRetail(ctx, pl, st, Math.max(1, floors)); return; }
+      if (cat === 'farm') { paintFarm(ctx, pl, st); return; }
+      if (cat === 'com') { paintTower(ctx, pl, st, floors, type); return; } // varied office/skyscraper
       drawBox(ctx, pl.tx, pl.ty, pl.w, pl.d, 0, h, st.col);
       drawWindows(ctx, pl.tx, pl.ty, pl.w, pl.d, 0, floors, st);
       if (type === 'house') {
@@ -551,8 +947,14 @@
     // headroom above the wall top for type-specific caps (towers / spire / canopy)
     let topH = floors * C.FLOOR_H;
     if (cat === 'power') topH = Math.max(topH, C.FLOOR_H * 5.0) + 22;        // cooling towers + steam
-    else if (b.type === 'skyscraper') topH += C.FLOOR_H * 2 + 34;           // setback crown + antenna
+    else if (b.type === 'skyscraper') topH += C.FLOOR_H * 3 + 36;           // crown variety (spire/pyramid/stepped + antenna)
+    else if (cat === 'com') topH += C.FLOOR_H * 1.6 + 24;                    // office crowns (mech room / antenna)
     else if (cat === 'transit') topH += 14;                                  // canopy lip
+    else if (cat === 'fire') topH += C.FLOOR_H * 2.2 + 12;                   // hose-drying tower
+    else if (cat === 'prison') topH += C.FLOOR_H * 1.6 + C.FLOOR_H * 0.9 + 14; // watchtowers
+    else if (cat === 'police') topH += 20;                                   // beacon mast
+    else if (cat === 'retail') topH += C.FLOOR_H * 0.8 + 14;                  // rooftop sign pylon
+    else if (cat === 'farm') topH = Math.max(topH, C.FLOOR_H * 2.4) + 16;     // silo + homestead roof
     else topH += 24;                                                         // generic roof furniture
     const maxH = topH + 24;
     const wpx = (C.TILE_W * 2 + 8) * zb;

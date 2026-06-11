@@ -30,6 +30,7 @@
   // Global block slot index -> block grid coords. Slot 0 = (0,0), then an
   // outward clockwise spiral (E, S, W, N with growing run lengths). Cached.
   const spiralCache = [{ bx: 0, by: 0 }];
+  const posToSlot = new Map([['0,0', 0]]); // "bx,by" -> slot (reverse of spiralCache)
   const SPIRAL_DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]]; // E, S, W, N
   let spiralState = { x: 0, y: 0, dir: 0, run: 1, stepInRun: 0, legInRun: 0 };
   function spiralSlot(s) {
@@ -46,8 +47,21 @@
         if (st.legInRun >= 2) { st.legInRun = 0; st.run++; }
       }
       spiralCache.push({ bx: st.x, by: st.y });
+      posToSlot.set(st.x + ',' + st.y, spiralCache.length - 1);
     }
     return spiralCache[s];
+  }
+
+  // Reverse: block grid coords -> global slot index. Extends the spiral until it
+  // has enumerated the full Chebyshev ring containing (bx,by) — (2r+1)^2 slots.
+  function slotForPos(bx, by) {
+    const key = bx + ',' + by;
+    let s = posToSlot.get(key);
+    if (s !== undefined) return s;
+    const ring = Math.max(Math.abs(bx), Math.abs(by));
+    const need = (2 * ring + 1) * (2 * ring + 1);
+    while (spiralCache.length < need) spiralSlot(spiralCache.length);
+    return posToSlot.get(key);
   }
 
   // Block tile origin (north corner tile) for a global block slot.
@@ -58,8 +72,10 @@
 
   // ---- Camera -----------------------------------------------------------------
   // Auto-fit frames the whole city; any drag/wheel suspends auto-fit and a 30s
-  // idle timer resumes it. zoom in [0.5, 2.5].
+  // idle timer resumes it. zoom in [MIN_ZOOM, MAX_ZOOM] — the low floor lets the
+  // wheel pull right back for a whole-metro view.
   const AUTOFIT_RESUME_MS = 30_000;
+  const MIN_ZOOM = 0.12, MAX_ZOOM = 2.5;
   function createCamera(canvas) {
     const cam = {
       x: 0, y: 0,          // world point at viewport center
@@ -83,7 +99,7 @@
       const pad = C.TILE_W * 1.5;
       const w = Math.max(1, b.maxX - b.minX + pad * 2);
       const h = Math.max(1, b.maxY - b.minY + pad * 2);
-      cam.targetZoom = C.clamp(Math.min(cssW / w, cssH / h), 0.5, 2.5);
+      cam.targetZoom = C.clamp(Math.min(cssW / w, cssH / h), MIN_ZOOM, MAX_ZOOM);
       cam.targetX = (b.minX + b.maxX) / 2;
       cam.targetY = (b.minY + b.maxY) / 2;
     };
@@ -135,7 +151,7 @@
       e.preventDefault();
       markManual();
       const factor = Math.exp(-e.deltaY * 0.0012);
-      const nz = C.clamp(cam.targetZoom * factor, 0.5, 2.5);
+      const nz = C.clamp(cam.targetZoom * factor, MIN_ZOOM, MAX_ZOOM);
       // zoom about the cursor: keep the world point under the mouse fixed
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left, my = e.clientY - rect.top;
@@ -151,5 +167,5 @@
     return cam;
   }
 
-  Object.assign(window.CITY, { worldToScreen, depthKey, spiralSlot, blockOrigin, createCamera });
+  Object.assign(window.CITY, { worldToScreen, depthKey, spiralSlot, slotForPos, blockOrigin, createCamera });
 })();

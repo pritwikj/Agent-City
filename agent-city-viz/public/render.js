@@ -60,6 +60,15 @@
         minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
       }
     }
+    // grow the ground to cover the ambient infrastructure ring + airport so the
+    // beltway/rail/runway sit on countryside grass rather than on bare sky.
+    if (C.infra && C.infra.screenExtent) {
+      const e = C.infra.screenExtent();
+      if (e.minX < minX) minX = e.minX;
+      if (e.minY < minY) minY = e.minY;
+      if (e.maxX > maxX) maxX = e.maxX;
+      if (e.maxY > maxY) maxY = e.maxY;
+    }
     const margin = C.TILE_W;
     minX -= margin; minY -= margin; maxX += margin; maxY += margin;
     let res = GROUND_RES;
@@ -72,6 +81,10 @@
     const g = groundCanvas.getContext('2d');
     g.setTransform(res, 0, 0, res, -minX * res, -minY * res);
 
+    // countryside backdrop the whole metro (incl. its outskirts) sits on
+    g.fillStyle = '#83bd69';
+    g.fillRect(minX, minY, maxX - minX, maxY - minY);
+
     for (const slot of blocks) {
       const o = C.blockOrigin(slot);
       // neighborhood tint: lush green uptown, drier/greyer in poorer areas
@@ -83,11 +96,13 @@
       const curb = C.tintHex(C.PAL.curb, prof.sidewalk);
       // full block as asphalt, with a slightly darker outer kerb edge
       C.drawDiamond(g, o.tx, o.ty, B, B, C.PAL.road, C.PAL.roadEdge);
-      // sidewalk ring (the 6x6 interior) with a crisp curb line
+      // sidewalk ring (the 6x6 interior) with a crisp curb line. The grass is
+      // held well inside this so a proper ~0.7-tile walkway is exposed all the
+      // way around the block for pedestrians (population.js) to travel on.
       C.drawDiamond(g, o.tx + 1, o.ty + 1, B - 2, B - 2, sidewalk, curb);
       // grass interior: darker base + lighter inset = a soft, un-flat lawn
-      C.drawDiamond(g, o.tx + 1.3, o.ty + 1.3, B - 2.6, B - 2.6, grass, grassEdge);
-      C.drawDiamond(g, o.tx + 1.85, o.ty + 1.85, B - 3.7, B - 3.7, grassHi);
+      C.drawDiamond(g, o.tx + 1.7, o.ty + 1.7, B - 3.4, B - 3.4, grass, grassEdge);
+      C.drawDiamond(g, o.tx + 2.0, o.ty + 2.0, B - 4.0, B - 4.0, grassHi);
       // internal alley seams — thin paved paths on the parcel grid lines that
       // divide the 6x6 interior into its 3x3 lots (cosmetic; citizens still
       // walk only the perimeter ring). Hidden under any building/tree on top.
@@ -140,6 +155,29 @@
     ctx2.beginPath(); ctx2.arc(p.x - 1.7 * s, p.y - 12.4 * s, 2.4 * s, 0, Math.PI * 2); ctx2.fill();
   }
 
+  // A nursery sapling — a half-grown tree shown while a green parcel is still
+  // being landscaped by the city's workers (scale grows toward a full tree).
+  function drawSapling(ctx2, tx, ty, scale) {
+    const p = C.worldToScreen(tx, ty, 0);
+    const s = 0.5 + 0.5 * (scale || 0.5);
+    ctx2.fillStyle = 'rgba(' + C.PAL.shadow + ',0.14)';
+    ctx2.beginPath(); ctx2.ellipse(p.x - 1.2 * s, p.y + 0.4, 3 * s, 1.4 * s, 0, 0, Math.PI * 2); ctx2.fill();
+    ctx2.strokeStyle = '#7a5d3c'; ctx2.lineWidth = 1.2 * s; ctx2.lineCap = 'round';
+    ctx2.beginPath(); ctx2.moveTo(p.x, p.y); ctx2.lineTo(p.x, p.y - 4 * s); ctx2.stroke();
+    ctx2.lineCap = 'butt';
+    ctx2.fillStyle = '#6dbd61';
+    ctx2.beginPath(); ctx2.arc(p.x, p.y - 5 * s, 2.4 * s, 0, Math.PI * 2); ctx2.fill();
+  }
+  // A surveyor's stake + ribbon — marks a parcel that's been zoned but not yet
+  // planted (the "site prepared, work pending" cue).
+  function drawStake(ctx2, tx, ty) {
+    const p = C.worldToScreen(tx, ty, 0);
+    ctx2.strokeStyle = '#b9a07a'; ctx2.lineWidth = 1;
+    ctx2.beginPath(); ctx2.moveTo(p.x, p.y); ctx2.lineTo(p.x, p.y - 7); ctx2.stroke();
+    ctx2.fillStyle = '#e25b5b';
+    ctx2.beginPath(); ctx2.moveTo(p.x, p.y - 7); ctx2.lineTo(p.x + 4, p.y - 5.6); ctx2.lineTo(p.x, p.y - 4.4); ctx2.closePath(); ctx2.fill();
+  }
+
   // ---- Ambient parcel zoning -------------------------------------------------
   // The server keeps building lots growable (a session's work must show), so
   // parks & landfills live HERE as cosmetic zoning on parcels a district has
@@ -180,7 +218,15 @@
     }
   }
 
-  function addParcelZone(list, d, block, p) {
+  // Empty parcels are landscaped by the city's workers too — nothing greens
+  // instantly. `order` is the parcel's place in the core-out reveal queue and
+  // `cw` the city's accumulated work; a parcel is bare dirt until work reaches
+  // its threshold, then plants up (saplings) and finally reads as a full
+  // park/plaza/landfill. Older/central parcels finish first.
+  const LAND_STEP = 1.4;   // work units between successive parcels greening
+  const LAND_SPAN = 6;     // work units to fully landscape one parcel
+
+  function addParcelZone(list, d, block, p, order, cw) {
     const po = C.parcelOrigin(block, p);
     const seed = C.hash32(d.key + ':zone:' + block + ':' + p);
     const prof = C.NEIGHBORHOODS[C.neighborhoodFor(block).klass] || C.NEIGHBORHOODS.middle;
@@ -190,6 +236,23 @@
       draw: (ctx2) => drawTree(ctx2, po.tx + sx, po.ty + sy, sd),
     });
     const push = (sx, sy, draw) => list.push({ depth: C.depthKey(po.tx + sx, po.ty + sy), draw });
+
+    // Landscaping progress for this parcel (1 = finished, established city).
+    const lp = order == null ? 1 : C.clamp((cw - order * LAND_STEP) / LAND_SPAN, 0, 1);
+    if (lp < 1) {
+      // site being prepared: graded dirt, a survey stake, and saplings that
+      // multiply as the work front reaches this parcel.
+      list.push({ depth: patchDepth, draw: (c) => C.drawDiamond(c, po.tx + 0.1, po.ty + 0.1, 1.8, 1.8, C.PAL.dirt, 'rgba(0,0,0,0.08)') });
+      push(0.32, 0.34, (c) => drawStake(c, po.tx + 0.32, po.ty + 0.34));
+      const spots = [[0.75, 0.85], [1.4, 1.15], [1.0, 1.5]];
+      const nS = Math.floor(lp * 3 + 0.0001);
+      for (let i = 0; i < nS; i++) {
+        const sp = spots[i];
+        push(sp[0], sp[1], (c) => drawSapling(c, po.tx + sp[0], po.ty + sp[1], lp));
+      }
+      if (lp > 0.1 && lp < 0.95) push(1.5, 0.65, (c) => drawMound(c, po.tx + 1.5, po.ty + 0.65, seed, 0.5));
+      return;
+    }
     // Weighted zoning biased by neighborhood: lush parks + fountains/plazas
     // uptown; bare, worn, littered lots in poorer areas.
     const W = [
@@ -225,12 +288,16 @@
   }
 
   function collectParkDrawables(list) {
+    const cw = (C.infra && C.infra.cityWork) ? C.infra.cityWork() : 1e9;
+    let order = 0; // core-out reveal queue position across all empty parcels
     for (const d of C.districts.values()) {
       const blocks = d.blocks || [];
-      const lotCount = (d.lots || []).length;
+      const usage = C.parcelUsage(d);
       for (let bi = 0; bi < blocks.length; bi++) {
-        const usedParcels = Math.max(0, Math.min(C.LOTS_PER_BLOCK, lotCount - bi * C.LOTS_PER_BLOCK));
-        for (let p = usedParcels; p < C.LOTS_PER_BLOCK; p++) addParcelZone(list, d, blocks[bi], p);
+        const taken = usage.get(blocks[bi]);
+        for (let p = 0; p < C.LOTS_PER_BLOCK; p++) {
+          if (!taken || !taken.has(p)) addParcelZone(list, d, blocks[bi], p, order++, cw);
+        }
       }
     }
   }
@@ -269,12 +336,20 @@
     if (C.graph) C.graph.resetBudget(PATH_BUDGET);
     if (C.pop) C.pop.update(dt, now, camera);
     if (C.traffic) C.traffic.update(dt, now, camera);
+    // ambient infrastructure (beltway traffic, commuter rail, airport)
+    if (C.highway) C.highway.update(dt, now, camera);
+    if (C.rail) C.rail.update(dt, now, camera);
+    if (C.airport) C.airport.update(dt, now, camera);
 
     const dpr = window.devicePixelRatio || 1;
     const vt = camera.viewTransform();
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // countryside fills the ENTIRE viewport (not just the metro's bounds) so the
+    // whole screen is open green space for the city to grow into.
+    ctx.fillStyle = '#83bd69';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     // world transform: world px -> canvas px
@@ -299,11 +374,15 @@
 
     // depth-sorted scene
     const list = [];
+    if (C.terrain) C.terrain.collectDrawables(list, camera, now); // natural countryside
     collectLotDrawables(list, now);
     collectParkDrawables(list);
     C.collectCitizenDrawables(list, now);
     if (C.pop) C.pop.collectDrawables(list, now, camera);
     if (C.traffic) C.traffic.collectDrawables(list, now, camera);
+    if (C.highway) C.highway.collectDrawables(list, now, camera);
+    if (C.rail) C.rail.collectDrawables(list, now, camera);
+    if (C.airport) C.airport.collectDrawables(list, now, camera);
     list.sort((a, b) => a.depth - b.depth);
     for (const d of list) d.draw(ctx);
 
@@ -318,6 +397,9 @@
     C.applyCity(city);
     if (C.pop) C.pop.reset();       // residents are derived from the city
     if (C.traffic) C.traffic.reset();
+    if (C.highway) C.highway.reset();
+    if (C.rail) C.rail.reset();
+    if (C.airport) C.airport.reset();
     camera.setBounds(C.worldBounds());
   }
 

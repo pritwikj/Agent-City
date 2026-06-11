@@ -147,51 +147,6 @@ html, body {
 }
 .stat-k { color: #7a8a99; font-weight: 700; letter-spacing: 0.8px; }
 .stat-v { color: #1d6fa5; font-weight: 800; font-variant-numeric: tabular-nums; }
-.stat-v.hot { color: #2e9e5b; }
-.stat-v.alert { color: #d64545; }
-
-#hud-districts {
-  bottom: 14px;
-  left: 14px;
-  padding: 10px 14px;
-  max-width: 280px;
-  max-height: 40vh;
-  overflow-y: auto;
-}
-.panel-head {
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 1.5px;
-  color: #7a8a99;
-  margin-bottom: 6px;
-}
-.district-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  line-height: 1.9;
-  white-space: nowrap;
-}
-.district-swatch {
-  width: 10px;
-  height: 10px;
-  border-radius: 3px;
-  flex: none;
-}
-.district-name {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 170px;
-}
-.district-count {
-  margin-left: auto;
-  color: #7a8a99;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-.district-empty { color: #9aa6b2; font-size: 11px; }
 
 /* ---- Chirper feed ------------------------------------------------------------ */
 #hud-chirper {
@@ -225,8 +180,8 @@ html, body {
 .chirp-text { color: #44535f; overflow-wrap: break-word; }
 
 /* slim scrollbars */
-#chirper-feed::-webkit-scrollbar, #hud-districts::-webkit-scrollbar { width: 5px; }
-#chirper-feed::-webkit-scrollbar-thumb, #hud-districts::-webkit-scrollbar-thumb {
+#chirper-feed::-webkit-scrollbar { width: 5px; }
+#chirper-feed::-webkit-scrollbar-thumb {
   background: rgba(120, 150, 175, 0.4);
   border-radius: 3px;
 }

@@ -27,7 +27,11 @@
   const SPAWN_PER_FRAME = 4;
   const RETIRE_PER_FRAME = 3;
   const RECALC_MS = 700;           // population / destination recompute cadence
-  const PED_OFFSET = 0.3;          // tiles toward block interior (sidewalk side)
+  // Tiles to shift toward the block interior so a ped drawn at (tile + 0.5)
+  // lands on the SIDEWALK band, not the road. Ring tiles sit at block-local
+  // 0.5 / 7.5 (the asphalt); the exposed sidewalk spans local 1..1.7, so ~0.85
+  // centres the walker on the gray walkway, clear of the car lanes.
+  const PED_OFFSET = 0.85;
   const CULL_MARGIN = 48;          // px beyond viewport before we stop drawing
 
   const SPEED = {                  // tiles / second
@@ -69,7 +73,6 @@
     const wByBlock = new Map();
     for (const d of C.districts.values()) {
       const lots = d.lots || [];
-      const lotCount = lots.length;
       for (const lot of lots) {
         if (!lot || lot.state !== 'complete') continue;
         const occ = occupancyOf(lot);
@@ -81,10 +84,12 @@
       }
       // leisure destinations: centers of not-yet-built (green/plaza) parcels
       const blocks = d.blocks || [];
+      const usage = C.parcelUsage(d);
       for (let bi = 0; bi < blocks.length; bi++) {
-        const used = Math.max(0, Math.min(C.LOTS_PER_BLOCK, lotCount - bi * C.LOTS_PER_BLOCK));
-        for (let p = used; p < C.LOTS_PER_BLOCK; p++) {
+        const taken = usage.get(blocks[bi]);
+        for (let p = 0; p < C.LOTS_PER_BLOCK; p++) {
           if (leisurePts.length > 160) break;
+          if (taken && taken.has(p)) continue;
           const po = C.parcelOrigin(blocks[bi], p);
           leisurePts.push({ tx: po.tx + 1, ty: po.ty + 1 });
         }

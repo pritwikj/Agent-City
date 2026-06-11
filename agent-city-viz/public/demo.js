@@ -18,11 +18,12 @@
   // the offline demo previews the same metro: a tall downtown core, a dense
   // inner ring, and low-rise suburbs further out.
   const HOOD_W = {
-    downtown: { office: 4, skyscraper: 3, apartment: 3, transit: 1, hospital: 1, police: 1 },
-    inner:    { apartment: 5, office: 2, house: 2, transit: 1, police: 1, prison: 1, fire_station: 1 },
-    upper:    { house: 5, apartment: 2, park: 2, school: 1, hospital: 1, fire_station: 1 },
-    middle:   { house: 4, apartment: 3, school: 2, park: 1, police: 1, fire_station: 1, hospital: 1 },
-    working:  { house: 5, apartment: 2, transit: 1, park: 1, police: 1, fire_station: 1, prison: 1 },
+    downtown: { skyscraper: 8, office: 5, apartment: 2, store: 2, restaurant: 1, transit: 1, hospital: 1 }, // CBD: skyscraper-led high-rise
+    inner:    { apartment: 5, office: 2, house: 2, shop: 2, restaurant: 1, store: 1, transit: 1, police: 1, prison: 1, fire_station: 1 },
+    upper:    { house: 8, apartment: 2, park: 2, shop: 1, restaurant: 1, school: 1, hospital: 1, fire_station: 1 },
+    middle:   { house: 7, apartment: 2, shop: 2, restaurant: 1, store: 1, school: 2, park: 1, police: 1, fire_station: 1, hospital: 1 },
+    working:  { house: 7, apartment: 2, shop: 1, store: 1, transit: 1, park: 1, police: 1, fire_station: 1, prison: 1 },
+    rural:    { house: 5, farm: 6, park: 1, shop: 1, school: 1 }, // homesteads scattered among fields
   };
   function demoTypeForBlock(seed, block) {
     const w = HOOD_W[C.neighborhoodFor(block).klass] || HOOD_W.middle;
@@ -70,12 +71,14 @@
     // Districts at varied life stages, incl. a t5 [2,2] tower mid-rise (the
     // depth-sorting stress case) and a fresh groundbreak.
     const districts = [];
-    let usedBlocks = 0;
+    const usedSlots = new Set();   // every block slot claimed across the mock city
     function newLot(d, n, progressRatio, complete) {
-      const seed = C.hash32(d.key + ':' + n);
-      const blockIdx = Math.floor(n / C.LOTS_PER_BLOCK);
-      while (blockIdx >= d.blocks.length) d.blocks.push(usedBlocks++);
-      const block = d.blocks[blockIdx];
+      // Real entropy (mirrors the server) so the offline demo builds a different
+      // city on every load rather than replaying one fixed sequence.
+      const seed = (Math.random() * 0x100000000) >>> 0;
+      const siteSeed = (Math.random() * 0x100000000) >>> 0;
+      const { blockSlot: block, parcel } = C.chooseSite(d, siteSeed, (s) => !usedSlots.has(s));
+      usedSlots.add(block);
       const type = demoTypeForBlock(seed, block);
       const floors = C.floorsForType(type, seed >>> 8);
       const required = requiredFor(n);
@@ -83,7 +86,7 @@
         id: 'd' + d.index + ':' + n,
         index: n,
         block,
-        parcel: n % C.LOTS_PER_BLOCK,
+        parcel,
         state: complete ? 'complete' : 'construction',
         progress: complete ? required : Math.floor(required * progressRatio),
         required,
@@ -92,10 +95,11 @@
       };
     }
     function makeCity(lotPlan) {
+      usedSlots.add(0);
       const d = {
         key: 'city', name: 'city',
         index: 0,
-        blocks: [usedBlocks++],
+        blocks: [0],
         hue: 210, // client no longer tints by district hue
         totalWork: 0, totalIncidents: 0, completedCount: 0,
         lots: [],
@@ -105,13 +109,18 @@
       districts.push(d);
       return d;
     }
-    // A sizable metro so the demo previews real neighborhood variety: a tall
-    // downtown core (block 0), a dense inner ring (blocks 1-8), and outer
-    // suburbs (slots 9+) — plus a tower rising and a fresh groundbreak.
+    // A sizable metro so the demo previews real neighborhood variety. Buildings
+    // are sited by chooseSite(), which spreads them across many partially-built
+    // blocks — a dense downtown core thinning out to leafy low-density suburbs —
+    // rather than packing one block before the next. Plus a tower rising and a
+    // fresh groundbreak.
     makeCity((d) => {
-      for (let n = 0; n < 100; n++) d.lots.push(newLot(d, n, 1, true));
-      d.lots.push(newLot(d, 100, 0.6, false));  // tower rising on an annexed block
-      d.lots.push(newLot(d, 101, 0.04, false)); // fresh excavation
+      // a metro large enough to sprawl from a downtown core, through suburban
+      // subdivisions, out to the first rural ring (farmland + homesteads) — sized
+      // so the dense city still frames well rather than drowning in countryside
+      for (let n = 0; n < 210; n++) d.lots.push(newLot(d, n, 1, true));
+      d.lots.push(newLot(d, 210, 0.6, false));  // tower rising on an annexed block
+      d.lots.push(newLot(d, 211, 0.04, false)); // fresh excavation
     });
 
     function emitCitySnapshot() {

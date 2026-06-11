@@ -95,6 +95,12 @@
     apartment:     { category: 'res',     floors: [3, 6],   foot: [[1, 1], [1, 2]] },
     office:        { category: 'com',     floors: [7, 14],   foot: [[1, 2]] },
     skyscraper:    { category: 'com',     floors: [20, 110], foot: [[2, 2]] },
+    // ── retail (Cities-Skylines commercial: low-rise storefronts that stay
+    //    storefronts — off the density chain, so they grow within their own
+    //    floor band rather than redeveloping into towers) ──
+    shop:          { category: 'retail',  floors: [1, 2],   foot: [[1, 1], [1, 2]] },  // corner store / boutique
+    store:         { category: 'retail',  floors: [1, 3],   foot: [[1, 2], [2, 2]] },  // supermarket / big-box
+    restaurant:    { category: 'retail',  floors: [1, 2],   foot: [[1, 1], [1, 2]] },  // diner / cafe
     school:        { category: 'school',  floors: [2, 4],   foot: [[1, 2], [2, 2]] },
     power_station: { category: 'power',   floors: [3, 4],   foot: [[2, 2]] },
     transit:       { category: 'transit', floors: [2, 3],   foot: [[1, 2], [2, 2]] },
@@ -102,13 +108,14 @@
     hospital:      { category: 'hospital',  floors: [4, 9],  foot: [[2, 2]] },
     fire_station:  { category: 'fire',      floors: [2, 3],  foot: [[1, 2], [2, 2]] },
     prison:        { category: 'prison',    floors: [2, 3],  foot: [[2, 2]] },
+    farm:          { category: 'farm',    floors: [0, 0],   foot: [[2, 2]] },  // rural tilled field + homestead
     park:          { category: 'park',    floors: [0, 0],   foot: [[2, 2]] },
     landfill:      { category: 'landfill', floors: [0, 0],  foot: [[2, 2]] },
   };
   const TYPE_WEIGHTS = [
-    { until: 4,        w: { house: 5, park: 3, apartment: 2, landfill: 1, school: 1 } },
-    { until: 10,       w: { apartment: 4, office: 3, school: 2, transit: 2, house: 2, park: 2, power_station: 1, police: 1, fire_station: 1, hospital: 1 } },
-    { until: Infinity, w: { office: 4, skyscraper: 3, power_station: 2, transit: 2, school: 1, park: 1, police: 1, fire_station: 1, hospital: 1, prison: 1 } },
+    { until: 4,        w: { house: 5, park: 3, apartment: 2, shop: 1, landfill: 1, school: 1 } },
+    { until: 10,       w: { apartment: 4, office: 3, shop: 2, restaurant: 1, store: 1, school: 2, transit: 2, house: 2, park: 2, power_station: 1, police: 1, fire_station: 1, hospital: 1 } },
+    { until: Infinity, w: { office: 4, skyscraper: 3, store: 2, restaurant: 1, power_station: 2, transit: 2, school: 1, park: 1, police: 1, fire_station: 1, hospital: 1, prison: 1 } },
   ];
   function pickType(seed, n) {
     const pool = TYPE_WEIGHTS.find((b) => n < b.until) || TYPE_WEIGHTS[TYPE_WEIGHTS.length - 1];
@@ -154,7 +161,7 @@
   // jitter — like the wealthy vs. working sides of an LA/Chicago/NYC.
   //   MIRROR: server/city.js carries an identical neighborhoodFor() when the
   //   optional spatial-growth model is enabled. Change both together.
-  const NB = { DOWNTOWN_R: 0, INNER_R: 1 };  // compact core, inner ring, then suburbs
+  const NB = { DOWNTOWN_R: 2, INNER_R: 3, RURAL_R: 6 };  // core (0-2), inner ring (3), suburbs (4-5), countryside (6+)
   const SUBURB_TIERS = ['working', 'middle', 'upper']; // wealthScore 0..2
   const hoodCache = new Map();
   function neighborhoodFor(blockSlot) {
@@ -168,6 +175,7 @@
     let klass;
     if (effRing <= NB.DOWNTOWN_R) klass = 'downtown';
     else if (effRing <= NB.INNER_R) klass = 'inner';
+    else if (effRing >= NB.RURAL_R) klass = 'rural'; // outermost ring: farmland + homesteads
     else {
       // sector gives the town a wealthy side and a working side; jitter + the
       // outer-ring "exurb" drift keep adjacent blocks from cloning.
@@ -178,7 +186,7 @@
       if (j2 === 0) score += 1; else if (j2 === 1) score -= 1;
       klass = SUBURB_TIERS[clamp(score, 0, 2)];
     }
-    const base = { downtown: 3, upper: 3, middle: 2, working: 1, inner: 0 }[klass];
+    const base = { downtown: 3, upper: 3, middle: 2, working: 1, inner: 0, rural: 1 }[klass];
     const wealth = clamp(base + (((jit >>> 4) % 100) / 100) * 0.5 - 0.25, 0, 3);
     h = { klass, wealth, ring };
     hoodCache.set(blockSlot, h);
@@ -228,6 +236,14 @@
       foliage: 0.2, landmarkProb: 0.08, wornProb: 0.45,
       pedDensity: 1.2, carDensity: 0.5, taxiProb: 0.15, carQuality: 0.2,
       pedMix: { resident: 4, kid: 3, vendor: 3, cyclist: 1 },
+    },
+    rural: {
+      label: 'Countryside', swatch: '#7bbf57',
+      grass: { dh: 6, ds: 18, dl: 2 }, sidewalk: { dh: 8, ds: 6, dl: -2 },
+      buildingTint: { dl: 2, ds: -2 },
+      foliage: 1.1, landmarkProb: 0.2, wornProb: 0.05,
+      pedDensity: 0.35, carDensity: 0.45, taxiProb: 0.0, carQuality: 0.5,
+      pedMix: { resident: 4, dogWalker: 2, kid: 2, cyclist: 1 },
     },
   };
 

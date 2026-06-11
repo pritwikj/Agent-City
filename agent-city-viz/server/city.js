@@ -48,7 +48,95 @@ export const TUNING = {
   REQUIRED_STEP: 15,
   REQUIRED_CAP: 400,       // ...capped so megatowers stay reachable
   LOTS_PER_BLOCK: 9,       // 3x3 parcels per block (see layout model above)
+  // Organic spread (see chooseSite): a SPRAWLING city — it almost always breaks
+  // ground on a new block rather than packing existing ones, so the footprint
+  // stays wide and most blocks are low-density. MIRROR of public/citymodel.js.
+  SPREAD_TARGET: 3,        // avg buildings/block before infill beats expansion
+  EXPAND_PROB: 0.78,       // strong frontier bias -> sprawl (~1.3 bldgs/block steady state)
+  INFILL_EXPAND_PROB: 0.12,// once a block is dense, opening a new one is rare
 };
+
+// Infill bias toward the denser core so suburbs stay sparse; center-out parcel
+// preference inside a block. MIRROR of public/citymodel.js.
+// Infill bias: the dense core still infills first, but suburbs infill a little
+// more readily than before so a started subdivision FILLS with homes (reads as
+// a community) instead of one lonely house per block; the rural ring stays the
+// sparsest. MIRROR of public/citymodel.js.
+const HOOD_INFILL_W = { downtown: 6, inner: 4, upper: 3, middle: 3, working: 2.5, rural: 0.7 };
+const PARCEL_W = [1, 2, 1, 2, 4, 2, 1, 2, 1];
+// Frontier-growth knobs: expansion grows from the EDGES of existing blocks in
+// seeded-random directions (NOT strictly inward-out along the spiral), so the
+// build ORDER is organic — a suburb pocket can develop before downtown, and
+// vice-versa. The density gradient still emerges later, from infill weighting.
+const LEAP_PROB = 0.11;   // chance a new block founds a detached satellite town
+const INWARD_PULL = 0.9;  // light centering — loose enough to let the metro sprawl outward
+
+/** A fresh random 32-bit unsigned value — the entropy source for groundbreaks. */
+function rand32() { return (Math.random() * 0x100000000) >>> 0; }
+
+/** Seeded weighted pick over `items`; weightOf(item) -> non-negative weight. */
+function weightedPick(items, weightOf, seed) {
+  let total = 0;
+  for (const it of items) total += weightOf(it);
+  if (total <= 0) return items[0];
+  let roll = ((seed >>> 0) % 100000) / 100000 * total;
+  for (const it of items) {
+    roll -= weightOf(it);
+    if (roll < 0) return it;
+  }
+  return items[items.length - 1];
+}
+
+/**
+ * Pick a NEW (empty) block for the city to grow onto. Grows from the edges of
+ * existing development in a seeded-random direction — not strictly inward-out —
+ * so neighborhoods come up in an organic order. `isFree(slot)` guards against
+ * reusing a slot already claimed by another district. MIRROR of
+ * public/citymodel.js pickExpansionSlot().
+ */
+function pickExpansionSlot(usedSlots, seed, isFree) {
+  const usedPos = new Set();
+  let maxRing = 0;
+  for (const s of usedSlots) {
+    const { bx, by } = spiralSlot(s);
+    usedPos.add(bx + ',' + by);
+    maxRing = Math.max(maxRing, Math.abs(bx), Math.abs(by));
+  }
+  // satellite leap: occasionally found a detached settlement out past the edge
+  if ((seed % 100) / 100 < LEAP_PROB) {
+    const r = maxRing + 1 + (seed % 3);
+    const ang = ((seed >>> 5) % 360) * Math.PI / 180;
+    const bx = Math.round(r * Math.cos(ang)), by = Math.round(r * Math.sin(ang));
+    if (!usedPos.has(bx + ',' + by)) {
+      const slot = slotForPos(bx, by);
+      if (isFree(slot)) return slot;
+    }
+  }
+  // frontier candidates: empty 8-neighbours of any built cell
+  const list = [];
+  const seen = new Set();
+  for (const s of usedSlots) {
+    const { bx, by } = spiralSlot(s);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      if (!dx && !dy) continue;
+      const nx = bx + dx, ny = by + dy, k = nx + ',' + ny;
+      if (usedPos.has(k) || seen.has(k)) continue;
+      seen.add(k);
+      const slot = slotForPos(nx, ny);
+      if (isFree(slot)) list.push({ slot, bx: nx, by: ny });
+    }
+  }
+  if (!list.length) { let s = 0; while (!isFree(s)) s++; return s; }
+  // gentle inward pull (keeps the metro centred) x per-cell seeded jitter (so
+  // the growth direction varies) — deliberately NO downtown class bias here, so
+  // the build ORDER is organic; density bias lives in infill instead.
+  return weightedPick(list, (c) => {
+    const ring = Math.max(Math.abs(c.bx), Math.abs(c.by));
+    const pull = 1 + INWARD_PULL / (1 + ring);
+    const jit = 0.35 + ((hash32('exp:' + c.bx + ',' + c.by + ':' + seed) % 1000) / 1000) * 0.65;
+    return pull * jit;
+  }, seed >>> 3).slot;
+}
 
 // FNV-1a 32-bit — identical to the client's hash32 so seeds/hues agree.
 export function hash32(str) {
@@ -67,6 +155,7 @@ export function hash32(str) {
 // that vary by compass sector. MIRROR of public/config.js neighborhoodFor()
 // (klass derivation must stay byte-identical) — change both together.
 const _spiralCache = [{ bx: 0, by: 0 }];
+const _posToSlot = new Map([['0,0', 0]]); // "bx,by" -> slot (reverse of _spiralCache)
 const _SPIRAL_DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]];
 const _spiralState = { x: 0, y: 0, dir: 0, run: 1, stepInRun: 0, legInRun: 0 };
 function spiralSlot(s) {
@@ -82,11 +171,23 @@ function spiralSlot(s) {
       if (st.legInRun >= 2) { st.legInRun = 0; st.run++; }
     }
     _spiralCache.push({ bx: st.x, by: st.y });
+    _posToSlot.set(st.x + ',' + st.y, _spiralCache.length - 1);
   }
   return _spiralCache[s];
 }
 
-const NB = { DOWNTOWN_R: 0, INNER_R: 1 };  // compact core, inner ring, then suburbs
+/** Reverse of spiralSlot: block grid coords -> global slot index. */
+function slotForPos(bx, by) {
+  const key = bx + ',' + by;
+  let s = _posToSlot.get(key);
+  if (s !== undefined) return s;
+  const ring = Math.max(Math.abs(bx), Math.abs(by));
+  const need = (2 * ring + 1) * (2 * ring + 1);
+  while (_spiralCache.length < need) spiralSlot(_spiralCache.length);
+  return _posToSlot.get(key);
+}
+
+const NB = { DOWNTOWN_R: 2, INNER_R: 3, RURAL_R: 6 };  // core (0-2), inner (3), suburbs (4-5), countryside (6+)
 const SUBURB_TIERS = ['working', 'middle', 'upper'];
 const _hoodCache = new Map();
 export function neighborhoodFor(blockSlot) {
@@ -99,6 +200,7 @@ export function neighborhoodFor(blockSlot) {
   let klass;
   if (effRing <= NB.DOWNTOWN_R) klass = 'downtown';
   else if (effRing <= NB.INNER_R) klass = 'inner';
+  else if (effRing >= NB.RURAL_R) klass = 'rural'; // outermost ring: farmland + homesteads
   else {
     const sector = ((Math.round(Math.atan2(by, bx) / (Math.PI / 4)) % 8) + 8) % 8;
     let score = hash32('sector:' + sector) % 3;
@@ -123,6 +225,12 @@ export const BUILDING_TYPES = {
   apartment:     { category: 'res',     floors: [3, 6],   foot: [[1, 1], [1, 2]] },
   office:        { category: 'com',     floors: [7, 14],   foot: [[1, 2]] },
   skyscraper:    { category: 'com',     floors: [20, 110], foot: [[2, 2]] },
+  // ── retail (Cities-Skylines commercial: low-rise storefronts that STAY
+  //    storefronts — off the density chain, grow within their own floor band
+  //    rather than redeveloping into towers) ──
+  shop:          { category: 'retail',  floors: [1, 2],   foot: [[1, 1], [1, 2]] },  // corner store / boutique
+  store:         { category: 'retail',  floors: [1, 3],   foot: [[1, 2], [2, 2]] },  // supermarket / big-box
+  restaurant:    { category: 'retail',  floors: [1, 2],   foot: [[1, 1], [1, 2]] },  // diner / cafe
   school:        { category: 'school',  floors: [2, 4],   foot: [[1, 2], [2, 2]] },
   power_station: { category: 'power',   floors: [3, 4],   foot: [[2, 2]] },
   transit:       { category: 'transit', floors: [2, 3],   foot: [[1, 2], [2, 2]] },
@@ -133,15 +241,18 @@ export const BUILDING_TYPES = {
   hospital:      { category: 'hospital',  floors: [4, 9],  foot: [[2, 2]] },
   fire_station:  { category: 'fire',      floors: [2, 3],  foot: [[1, 2], [2, 2]] },
   prison:        { category: 'prison',    floors: [2, 3],  foot: [[2, 2]] },
+  // ── rural (countryside ring): a tilled field with a small homestead; like
+  //    park/landfill it is a 0-floor ground feature, never grows ──
+  farm:          { category: 'farm',    floors: [0, 0],   foot: [[2, 2]] },
   park:          { category: 'park',    floors: [0, 0],   foot: [[2, 2]] },
   landfill:      { category: 'landfill', floors: [0, 0],  foot: [[2, 2]] },
 };
 
 // Weighted pools by maturity band; first band whose `until` exceeds n wins.
 export const TYPE_WEIGHTS = [
-  { until: 4,        w: { house: 5, park: 3, apartment: 2, landfill: 1, school: 1 } },
-  { until: 10,       w: { apartment: 4, office: 3, school: 2, transit: 2, house: 2, park: 2, power_station: 1, police: 1, fire_station: 1, hospital: 1 } },
-  { until: Infinity, w: { office: 4, skyscraper: 3, power_station: 2, transit: 2, school: 1, park: 1, police: 1, fire_station: 1, hospital: 1, prison: 1 } },
+  { until: 4,        w: { house: 5, park: 3, apartment: 2, shop: 1, landfill: 1, school: 1 } },
+  { until: 10,       w: { apartment: 4, office: 3, shop: 2, restaurant: 1, store: 1, school: 2, transit: 2, house: 2, park: 2, power_station: 1, police: 1, fire_station: 1, hospital: 1 } },
+  { until: Infinity, w: { office: 4, skyscraper: 3, store: 2, restaurant: 1, power_station: 2, transit: 2, school: 1, park: 1, police: 1, fire_station: 1, hospital: 1, prison: 1 } },
 ];
 
 export function pickType(seed, n) {
@@ -208,12 +319,17 @@ function maxFloorsForType(type) { return (BUILDING_TYPES[type] || BUILDING_TYPES
 // The zone still CAPS density (so the renovation engine is unchanged) — these
 // just decide the STARTING type and cap per neighborhood, so a downtown lot can
 // climb into a tower while a suburban lot tops out at houses/flats.
+// Each neighborhood's STARTING-type mix. Suburbs (upper/middle/working) are
+// dominated by houses with a sprinkle of local retail (corner store, cafe) and
+// parks so they read as planned residential COMMUNITIES; downtown/inner carry
+// the bigger stores and offices; the rural ring is farmland + homesteads.
 const HOOD_TYPE_WEIGHTS = {
-  downtown: { office: 4, skyscraper: 3, apartment: 3, transit: 1, hospital: 1, police: 1 },
-  inner:    { apartment: 5, office: 2, house: 2, landfill: 1, transit: 1, police: 1, prison: 1, fire_station: 1 },
-  upper:    { house: 5, apartment: 2, park: 2, school: 1, hospital: 1, fire_station: 1 },
-  middle:   { house: 4, apartment: 3, school: 2, park: 1, police: 1, fire_station: 1, hospital: 1 },
-  working:  { house: 5, apartment: 2, landfill: 1, transit: 1, park: 1, police: 1, fire_station: 1, prison: 1 },
+  downtown: { skyscraper: 8, office: 5, apartment: 2, store: 2, restaurant: 1, transit: 1, hospital: 1 }, // CBD: skyscraper-led high-rise
+  inner:    { apartment: 5, office: 2, house: 2, shop: 2, restaurant: 1, store: 1, transit: 1, police: 1, prison: 1, fire_station: 1 },
+  upper:    { house: 8, apartment: 2, park: 2, shop: 1, restaurant: 1, school: 1, hospital: 1, fire_station: 1 },
+  middle:   { house: 7, apartment: 2, shop: 2, restaurant: 1, store: 1, school: 2, park: 1, police: 1, fire_station: 1, hospital: 1 },
+  working:  { house: 7, apartment: 2, shop: 1, store: 1, transit: 1, park: 1, police: 1, fire_station: 1, prison: 1 },
+  rural:    { house: 5, farm: 6, park: 1, shop: 1, school: 1 }, // homesteads scattered among fields
 };
 function pickTypeForHood(seed, hood) {
   const w = HOOD_TYPE_WEIGHTS[hood.klass] || HOOD_TYPE_WEIGHTS.middle;
@@ -234,6 +350,7 @@ function zoneForHood(hood, seed) {
     case 'inner':    return r < 5 ? 'commercial' : 'residential';
     case 'upper':    return r < 2 ? 'commercial' : 'residential';
     case 'middle':   return r < 3 ? 'commercial' : 'residential';
+    case 'rural':    return 'residential'; // countryside: low-density only
     default:         return 'residential'; // working-class
   }
 }
@@ -378,18 +495,51 @@ export class CityModel extends EventEmitter {
     return d;
   }
 
-  /** Start construction on district's next lot; annex a block if full. */
+  /**
+   * Decide where the next building breaks ground so the city SPREADS organically
+   * instead of packing one block before annexing the next: the frontier opens
+   * new blocks while they're still mostly empty, and infill prefers the denser
+   * core (downtown/inner) so suburbs stay sparse. Returns { blockSlot, parcel }
+   * and annexes a frontier block when expanding. MIRROR of public/citymodel.js
+   * chooseSite() — change both together. Reads district.lots, so call it BEFORE
+   * pushing the new lot.
+   */
+  chooseSite(district, seed) {
+    const n = district.lots.length;
+    const used = new Map(); // blockSlot -> Set(parcel)
+    for (const lot of district.lots) {
+      let s = used.get(lot.block);
+      if (!s) { s = new Set(); used.set(lot.block, s); }
+      s.add(lot.parcel);
+    }
+    const infill = district.blocks.filter((b) => (used.get(b)?.size || 0) < TUNING.LOTS_PER_BLOCK);
+    const avgOcc = n / Math.max(1, district.blocks.length);
+    const r = (seed % 1000) / 1000;
+    const expandProb = avgOcc < TUNING.SPREAD_TARGET ? TUNING.EXPAND_PROB : TUNING.INFILL_EXPAND_PROB;
+    let blockSlot;
+    if (infill.length === 0 || r < expandProb) {
+      blockSlot = pickExpansionSlot(district.blocks, seed, (s) => !this.usedBlocks.has(s));
+      this.usedBlocks.add(blockSlot);
+      district.blocks.push(blockSlot);
+    } else {
+      blockSlot = weightedPick(infill, (b) => HOOD_INFILL_W[neighborhoodFor(b).klass] || 1, seed >>> 7);
+    }
+    const taken = used.get(blockSlot);
+    const free = [];
+    for (let p = 0; p < TUNING.LOTS_PER_BLOCK; p++) if (!taken || !taken.has(p)) free.push(p);
+    const parcel = weightedPick(free, (p) => PARCEL_W[p] || 1, seed >>> 13);
+    return { blockSlot, parcel };
+  }
+
+  /** Start construction on district's next lot; spread across blocks organically. */
   breakGround(district) {
     const n = district.lots.length;
-    const parcel = n % TUNING.LOTS_PER_BLOCK;
-    let blockIdx = Math.floor(n / TUNING.LOTS_PER_BLOCK);
-    if (blockIdx >= district.blocks.length) {
-      const block = this.nextFreeBlock();
-      this.usedBlocks.add(block);
-      district.blocks.push(block);
-    }
-    const seed = hash32(`${district.key}:${n}`);
-    const blockSlot = district.blocks[blockIdx];
+    // Real entropy (not a function of n): placement, type and facade differ every
+    // run, so no two cities build out the same way. Each lot is decided ONCE here
+    // and persisted/streamed verbatim — clients render the stored record and never
+    // recompute it, so randomness costs nothing in replay/agreement.
+    const seed = rand32();
+    const { blockSlot, parcel } = this.chooseSite(district, rand32());
     // Spatial growth: the block's place in the metro decides its character — a
     // tall DOWNTOWN core, a denser/poorer INNER ring, low-rise SUBURBS — so type
     // and zone derive from the neighborhood rather than from maturity. The zone
@@ -403,7 +553,7 @@ export class CityModel extends EventEmitter {
     const lot = {
       id: `d${district.index}:${n}`,
       index: n,
-      block: district.blocks[blockIdx],
+      block: blockSlot,
       parcel,
       zone,
       state: 'construction',
@@ -472,7 +622,7 @@ export class CityModel extends EventEmitter {
   /** Whether a building can still be made denser/taller within its zone. */
   canGrow(lot) {
     const b = lot.building || {};
-    if (b.type === 'park' || b.type === 'landfill') return false;
+    if (b.type === 'park' || b.type === 'landfill' || b.type === 'farm') return false;
     const zone = lot.zone || 'commercial';
     const curRank = densityRank(b.type);
     if (curRank >= 0) {

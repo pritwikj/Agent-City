@@ -17,6 +17,7 @@
 (function () {
   'use strict';
   const C = window.CITY;
+  const B = C.BLOCK_TILES;
   const canvas = document.getElementById('city-canvas');
 
   // ---- Tunables -------------------------------------------------------------
@@ -44,21 +45,39 @@
   const PK_OFF = 20000, PK_MUL = 40000;
   function packTile(tx, ty) { return (tx + PK_OFF) * PK_MUL + (ty + PK_OFF); }
 
+  // ---- Traffic signals ------------------------------------------------------
+  // Block corners shared by 2+ blocks are real crossroads; we signalize them.
+  // A 2-phase cycle alternates green between the two travel axes (x then y) with
+  // a yellow tail and an all-red clearance. Cars treat a red light as a virtual
+  // stationary leader at the stop line, so the existing IDM brakes them to a
+  // smooth halt and queues form behind — no separate stopping code path. Phase
+  // is a pure function of the clock + a per-intersection hash offset (no
+  // per-signal state to manage), so neighbouring lights run out of sync.
+  const SIG_G = 5000;              // ms green per axis
+  const SIG_Y = 900;               // ms yellow tail
+  const SIG_AR = 500;              // ms all-red clearance
+  const SIG_HALF = SIG_G + SIG_Y + SIG_AR;
+  const SIG_CYCLE = 2 * SIG_HALF;  // x-half then y-half
+  const STOP_SETBACK = 0.55;       // tiles the stop line sits before the box
+
   const NICE_CARS = ['#d8443a', '#2f6fb0', '#e8b53a', '#2a2d33', '#eceef0', '#3a8f5a', '#b0433f'];
   const DULL_CARS = ['#7a7d82', '#5a6a78', '#8a7a5a', '#43474d', '#9a9488', '#6a6f66'];
 
   // ---- State ----------------------------------------------------------------
   const cars = new Map();
   const buses = [];
+  const signals = new Map();       // 'ix,iy' -> { tx, ty, off } signalized junctions
   let nextId = 1;
   let lastRecalc = -1e9;
   let routesVersion = -1;
   let allBlocks = [0];
   let targetCars = 0;
+  let hwTiles = [];                // drivable highway tiles (beltway, once paved)
 
   // ---- Recompute (throttled): car budget + bus routes -----------------------
   function recompute(camera) {
     allBlocks = C.usedBlocks(); if (!allBlocks.length) allBlocks = [0];
+    hwTiles = (C.infra && C.infra.drivableTiles) ? C.infra.drivableTiles() : [];
     let dens = 0;
     for (const s of allBlocks) {
       const prof = C.NEIGHBORHOODS[C.neighborhoodFor(s).klass] || C.NEIGHBORHOODS.middle;
@@ -72,10 +91,54 @@
     else if (z < 0.8) t = Math.round(t * 0.7);
     targetCars = t;
 
+    buildSignals();
+
     if (routesVersion !== C.graph.graphVersion()) {
       buildBusRoutes();
       routesVersion = C.graph.graphVersion();
     }
+  }
+
+  // A boundary corner (ix,iy) is touched by the 4 blocks around it; when 2+ of
+  // them actually exist it's a crossroads worth signalizing (a lone block's
+  // corners are just turns — no cross traffic — so they get no lights).
+  function buildSignals() {
+    const touch = new Map();
+    for (const slot of allBlocks) {
+      const sp = C.spiralSlot(slot);
+      for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+        const k = (sp.bx + dx) + ',' + (sp.by + dy);
+        touch.set(k, (touch.get(k) || 0) + 1);
+      }
+    }
+    signals.clear();
+    for (const [k, n] of touch) {
+      if (n < 2) continue;
+      const c = k.split(',');
+      const ix = +c[0], iy = +c[1];
+      signals.set(k, { tx: ix * B - 0.5, ty: iy * B - 0.5, off: C.hash32('sig:' + k) % SIG_CYCLE });
+    }
+  }
+
+  // Phase queries — pure functions of the clock + per-signal offset.
+  function axisGreen(axisX, off, now) {            // may this axis proceed (green or yellow)?
+    const t = (now + off) % SIG_CYCLE;
+    return axisX ? (t < SIG_G + SIG_Y) : (t >= SIG_HALF && t < SIG_HALF + SIG_G + SIG_Y);
+  }
+  function lampColor(axisX, off, now) {            // for rendering one head
+    const t = (now + off) % SIG_CYCLE;
+    const base = axisX ? 0 : SIG_HALF;             // local time within this axis's slot
+    const lt = ((t - base) % SIG_CYCLE + SIG_CYCLE) % SIG_CYCLE;
+    if (lt < SIG_G) return 'g';
+    if (lt < SIG_G + SIG_Y) return 'y';
+    return 'r';
+  }
+  function signalAt(tx, ty) {
+    return signals.get(Math.round(tx / B) + ',' + Math.round(ty / B)) || null;
+  }
+  function isCornerTile(tx, ty) {                  // a block-ring corner = intersection tile
+    const lx = ((tx % B) + B) % B, ly = ((ty % B) + B) % B;
+    return (lx === 0 || lx === B - 1) && (ly === 0 || ly === B - 1);
   }
 
   // ---- Bus routes -----------------------------------------------------------
@@ -147,10 +210,18 @@
     return { color: pal[(Math.random() * pal.length) | 0], taxi: false };
   }
 
-  function spawnCar() {
+  // A trip endpoint: usually a random block-ring tile, but ~30% of the time a
+  // finished highway tile so the beltway visibly carries through-traffic.
+  function randDestTile() {
+    if (hwTiles.length && Math.random() < 0.3) return hwTiles[(Math.random() * hwTiles.length) | 0];
     const slot = allBlocks[(Math.random() * allBlocks.length) | 0];
     const ring = C.ringTiles(slot);
-    const t = ring[(Math.random() * ring.length) | 0];
+    return ring[(Math.random() * ring.length) | 0];
+  }
+
+  function spawnCar() {
+    const slot = allBlocks[(Math.random() * allBlocks.length) | 0];
+    const t = randDestTile();
     const c = carColor(slot);
     const car = {
       id: 'c' + (nextId++), tx: t.tx, ty: t.ty, dirx: 1, diry: 0,
@@ -164,9 +235,7 @@
   }
 
   function newCarGoal(car) {
-    const slot = allBlocks[(Math.random() * allBlocks.length) | 0];
-    const ring = C.ringTiles(slot);
-    const g = ring[(Math.random() * ring.length) | 0];
+    const g = randDestTile();
     const path = C.graph.findPath(car.tx, car.ty, g.tx, g.ty);
     if (!path || path.length < 2) return false;
     car.path = path; car.pi = 1;
@@ -228,22 +297,58 @@
     return Math.min(car.vmax, cap + dc * 1.3);           // ease in, accelerate out
   }
 
-  // IDM-lite longitudinal control, then move car.v*dt along the polyline.
-  function driveCar(car, dt) {
+  // Nearest red light ahead, expressed as a virtual stationary leader at its
+  // stop line. Walks the path to the first signalized corner; if that corner's
+  // light is red for the car's approach axis, returns the gap to the stop line.
+  // A green light returns null (proceed); a corner the car is already entering
+  // is skipped so it clears rather than freezing in the box.
+  function signalStop(car, now) {
+    if (signals.size === 0) return null;
+    const path = car.path;
+    if (!path) return null;
+    let acc = 0, px = car.tx, py = car.ty, pi = car.pi;
+    for (let s = 0; s < LOOK_STEPS + 2 && pi < path.length && acc < LOOK_TILES + 2; s++, pi++) {
+      const wp = path[pi];
+      const seg = Math.hypot(wp.tx - px, wp.ty - py);
+      if (isCornerTile(wp.tx, wp.ty)) {
+        const sig = signalAt(wp.tx, wp.ty);
+        if (sig) {
+          let ax = wp.tx - px, ay = wp.ty - py;             // approach direction
+          if (Math.abs(ax) < 1e-6 && Math.abs(ay) < 1e-6) { ax = car.dirx; ay = car.diry; }
+          const axisX = Math.abs(ax) >= Math.abs(ay);
+          if (!axisGreen(axisX, sig.off, now)) {
+            const stopDist = acc + seg - STOP_SETBACK;
+            return stopDist > 0.05 ? { gap: stopDist, lv: 0 } : null; // else clearing
+          }
+          return null;                                       // first light is green → go
+        }
+      }
+      acc += seg; px = wp.tx; py = wp.ty;
+    }
+    return null;
+  }
+
+  // IDM-lite longitudinal control vs the nearest constraint (a car ahead OR a
+  // red light, whichever is closer), then move car.v*dt along the polyline.
+  function driveCar(car, dt, now) {
     const vmax = desiredSpeed(car);
     const lead = leaderAhead(car);
+    const sig = signalStop(car, now);
+    const obs = sig && (!lead || sig.gap < lead.gap) ? sig : lead;  // binding obstacle
     let a;
-    if (lead) {
-      const dv = car.v - lead.lv;                         // closing rate
+    if (obs) {
+      const dv = car.v - obs.lv;                          // closing rate
       const sStar = MIN_GAP + Math.max(0, car.v * HEADWAY + (car.v * dv) / (2 * Math.sqrt(ACCEL * BRAKE)));
-      a = ACCEL * (1 - Math.pow(car.v / vmax, 4) - Math.pow(sStar / lead.gap, 2));
+      a = ACCEL * (1 - Math.pow(car.v / vmax, 4) - Math.pow(sStar / obs.gap, 2));
     } else {
       a = ACCEL * (1 - Math.pow(car.v / vmax, 4));
     }
     car.v = Math.max(0, car.v + C.clamp(a, -BRAKE * 1.6, ACCEL) * dt);
 
-    // Gridlock relief: if a junction give-way leaves us stalled too long, creep.
-    if (car.v < 0.05 && lead) { car.stuckMs += dt * 1000; if (car.stuckMs > UNSTICK_MS) car.v = 0.5; }
+    // Gridlock relief: creep only when a *car* (not a red light) has us stalled
+    // too long — we never auto-run a red.
+    const carBound = lead && lead === obs;
+    if (car.v < 0.05 && carBound) { car.stuckMs += dt * 1000; if (car.stuckMs > UNSTICK_MS) car.v = 0.5; }
     else car.stuckMs = 0;
 
     advanceDist(car, car.v * dt, dt);
@@ -332,7 +437,7 @@
     rebuildGrid();
     for (const car of cars.values()) {
       if (car.alpha < 1) car.alpha = Math.min(1, car.alpha + dt * 2.5);
-      if (car.path && car.pi < car.path.length) driveCar(car, dt);
+      if (car.path && car.pi < car.path.length) driveCar(car, dt, now);
       else { car.v = 0; newCarGoal(car); }   // arrived: idle a beat, then re-route
     }
     for (const bus of buses) advanceBus(bus, dt, now);
@@ -418,10 +523,47 @@
     return !(sx < -CULL_MARGIN || sx > cw + CULL_MARGIN || sy < -CULL_MARGIN || sy > ch + CULL_MARGIN);
   }
 
+  // A roadside signal mast: a short pole with a 3-lamp head. The head shows the
+  // x-axis state (green→yellow→red); the y-axis is its complement, so one head
+  // reads the whole junction as it cycles.
+  const LAMP_ON = { r: '#ff4d3d', y: '#ffd23d', g: '#46e06a' };
+  const LAMP_OFF = { r: '#5c2722', y: '#5c4f22', g: '#235c34' };
+  function drawSignal(ctx, sig, now) {
+    const g = C.worldToScreen(sig.tx - 0.5, sig.ty - 0.5, 0);  // mast at the box's near corner
+    const H = 11;
+    ctx.save();
+    // pole
+    ctx.strokeStyle = '#2b3036'; ctx.lineWidth = 1.4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(g.x, g.y); ctx.lineTo(g.x, g.y - H); ctx.stroke();
+    ctx.lineCap = 'butt';
+    // head housing
+    const hy = g.y - H - 6.2;
+    ctx.fillStyle = '#22262b';
+    ctx.fillRect(g.x - 1.7, hy, 3.4, 7.6);
+    // lamps
+    const active = lampColor(true, sig.off, now);
+    const keys = ['r', 'y', 'g'];
+    for (let i = 0; i < 3; i++) {
+      const k = keys[i], cy = hy + 1.5 + i * 2.4, on = k === active;
+      if (on) {
+        ctx.globalAlpha = 0.32; ctx.fillStyle = LAMP_ON[k];
+        ctx.beginPath(); ctx.arc(g.x, cy, 2.1, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      ctx.fillStyle = on ? LAMP_ON[k] : LAMP_OFF[k];
+      ctx.beginPath(); ctx.arc(g.x, cy, 0.95, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
   function collectDrawables(list, now, camera) {
     const vt = camera ? camera.viewTransform() : null;
     const cw = (canvas && canvas.clientWidth) || 1e5;
     const ch = (canvas && canvas.clientHeight) || 1e5;
+    for (const sig of signals.values()) {
+      if (vt && !onScreen(sig, vt, cw, ch)) continue;
+      list.push({ depth: C.depthKey(sig.tx, sig.ty), draw: (ctx) => drawSignal(ctx, sig, now) });
+    }
     for (const car of cars.values()) {
       if (vt && !onScreen(car, vt, cw, ch)) continue;
       list.push({ depth: C.depthKey(car.tx, car.ty), draw: (ctx) => drawVehicle(ctx, car, car.len, car.wid, car.color, { taxi: car.taxi }) });
@@ -435,6 +577,7 @@
   function reset() {
     cars.clear();
     buses.length = 0;
+    signals.clear();
     routesVersion = -1;
     lastRecalc = -1e9;
   }

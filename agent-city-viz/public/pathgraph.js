@@ -28,6 +28,7 @@
 
   const nodes = new Map();                    // id -> { id, tx, ty, nbrs:[id] }
   let builtVersion = -1;
+  let builtRoadVersion = -1;
   let version = 0;
 
   const cache = new Map();                    // 'startId_goalId' -> [{tx,ty}]
@@ -48,6 +49,15 @@
         if (!nodes.has(id)) nodes.set(id, { id, tx: t.tx, ty: t.ty, nbrs: [] });
       }
     }
+    // Highway: any beltway edge that workers have finished paving is real road —
+    // fold its tiles (and on/off ramps) into the same graph so ordinary traffic
+    // drives on it. Tiles that happen to abut the block ring auto-link below.
+    if (C.infra && C.infra.drivableTiles) {
+      for (const t of C.infra.drivableTiles()) {
+        const id = pack(t.tx, t.ty);
+        if (!nodes.has(id)) nodes.set(id, { id, tx: t.tx, ty: t.ty, nbrs: [] });
+      }
+    }
     for (const n of nodes.values()) {
       for (const [dx, dy] of DIRS) {
         const nid = pack(n.tx + dx, n.ty + dy);
@@ -55,11 +65,13 @@
       }
     }
     builtVersion = C.getGroundVersion();
+    builtRoadVersion = (C.infra && C.infra.roadVersion) ? C.infra.roadVersion() : 0;
     version++;
   }
 
   function ensureBuilt() {
-    if (nodes.size === 0 || builtVersion !== C.getGroundVersion()) build();
+    const rv = (C.infra && C.infra.roadVersion) ? C.infra.roadVersion() : 0;
+    if (nodes.size === 0 || builtVersion !== C.getGroundVersion() || builtRoadVersion !== rv) build();
   }
 
   // ---- Lookups --------------------------------------------------------------

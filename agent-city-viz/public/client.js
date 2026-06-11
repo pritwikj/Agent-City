@@ -1,6 +1,6 @@
 /* ===========================================================================
    client.js — WebSocket consumer, reconnect/backoff, demo-mode fallback,
-   HUD/districts wiring. Starts the render loop.
+   HUD wiring. Starts the render loop.
 
    Server contract (ws://localhost:8080/stream):
      -> on open: send { lastSeq }
@@ -18,10 +18,7 @@
   const elStatus = document.getElementById('status');
   const elPop = document.getElementById('hud-pop');
   const elCrews = document.getElementById('hud-crews');
-  const elRate = document.getElementById('hud-rate');
-  const elInc = document.getElementById('hud-inc');
   const elBld = document.getElementById('hud-bld');
-  const elDistricts = document.getElementById('district-list');
 
   // ---- State --------------------------------------------------------------
   let lastSeq = null;
@@ -154,36 +151,13 @@
   }
 
   // ---- HUD ------------------------------------------------------------------
-  function renderDistricts() {
-    const items = [...C.districts.values()].sort((a, b) => a.index - b.index);
-    if (items.length === 0) {
-      elDistricts.innerHTML = '<div class="district-empty">— awaiting first construction —</div>';
-      return;
-    }
-    elDistricts.innerHTML = items.map((d) => {
-      const built = d.completedCount || 0;
-      const total = (d.lots || []).length;
-      return '<div class="district-item">' +
-        '<span class="district-swatch" style="background:' + C.districtColor(d.hue, 60, 52) + '"></span>' +
-        '<span class="district-name">' + C.esc(d.name) + '</span>' +
-        '<span class="district-count">' + built + '/' + total + '</span>' +
-      '</div>';
-    }).join('');
-  }
-
   function refreshHud() {
     const c = R.counts();
     // POPULATION = ambient residents (grows with housing); CREWS = live agents
     const pop = (C.pop && C.pop.population) ? C.pop.population() : 0;
     elPop.textContent = pop >= 1000 ? (pop / 1000).toFixed(1) + 'k' : pop;
     elCrews.textContent = c.sessions + c.crews;
-    elRate.textContent = (c.throughput || 0).toFixed ? Number(c.throughput || 0).toFixed(1) : c.throughput;
-    const pct = Math.round((c.errorRate || 0) * 100);
-    elInc.textContent = pct + '%';
     elBld.textContent = c.city ? c.city.buildings : 0;
-    elRate.className = 'stat-v' + (c.throughput > 0 ? ' hot' : '');
-    elInc.className = 'stat-v' + (pct > 20 ? ' alert' : '');
-    renderDistricts();
   }
 
   // ---- Boot ---------------------------------------------------------------
