@@ -14,10 +14,23 @@
   // server swaps a rolled park/landfill for a growable type, so the demo does
   // the same so its lots always have something to grow into.
   function requiredFor(n) { return Math.min(400, 30 + 15 * n); }
-  function demoType(seed, n) {
-    let t = C.pickType(seed, n);
-    if (t === 'park' || t === 'landfill') t = n < 4 ? 'house' : n < 10 ? 'apartment' : 'office';
-    return t;
+  // Building types by neighborhood (mirror of server/city.js spatial growth) so
+  // the offline demo previews the same metro: a tall downtown core, a dense
+  // inner ring, and low-rise suburbs further out.
+  const HOOD_W = {
+    downtown: { office: 4, skyscraper: 3, apartment: 3, transit: 1, hospital: 1, police: 1 },
+    inner:    { apartment: 5, office: 2, house: 2, transit: 1, police: 1, prison: 1, fire_station: 1 },
+    upper:    { house: 5, apartment: 2, park: 2, school: 1, hospital: 1, fire_station: 1 },
+    middle:   { house: 4, apartment: 3, school: 2, park: 1, police: 1, fire_station: 1, hospital: 1 },
+    working:  { house: 5, apartment: 2, transit: 1, park: 1, police: 1, fire_station: 1, prison: 1 },
+  };
+  function demoTypeForBlock(seed, block) {
+    const w = HOOD_W[C.neighborhoodFor(block).klass] || HOOD_W.middle;
+    const es = Object.entries(w);
+    let tot = 0; for (const [, x] of es) tot += x;
+    let r = seed % tot;
+    for (const [t, x] of es) { if (r < x) return t; r -= x; }
+    return es[0][0];
   }
 
   function makeMockServer(onMessage) {
@@ -60,15 +73,16 @@
     let usedBlocks = 0;
     function newLot(d, n, progressRatio, complete) {
       const seed = C.hash32(d.key + ':' + n);
-      const type = demoType(seed, n);
-      const floors = C.floorsForType(type, seed >>> 8);
       const blockIdx = Math.floor(n / C.LOTS_PER_BLOCK);
       while (blockIdx >= d.blocks.length) d.blocks.push(usedBlocks++);
+      const block = d.blocks[blockIdx];
+      const type = demoTypeForBlock(seed, block);
+      const floors = C.floorsForType(type, seed >>> 8);
       const required = requiredFor(n);
       return {
         id: 'd' + d.index + ':' + n,
         index: n,
-        block: d.blocks[blockIdx],
+        block,
         parcel: n % C.LOTS_PER_BLOCK,
         state: complete ? 'complete' : 'construction',
         progress: complete ? required : Math.floor(required * progressRatio),
@@ -91,12 +105,13 @@
       districts.push(d);
       return d;
     }
-    // One shared city (no per-project zoning): a run of finished blocks, a tower
-    // mid-rise, and a fresh groundbreak — enough to exercise every stage + type.
+    // A sizable metro so the demo previews real neighborhood variety: a tall
+    // downtown core (block 0), a dense inner ring (blocks 1-8), and outer
+    // suburbs (slots 9+) — plus a tower rising and a fresh groundbreak.
     makeCity((d) => {
-      for (let n = 0; n < 22; n++) d.lots.push(newLot(d, n, 1, true));
-      d.lots.push(newLot(d, 22, 0.6, false));  // tower rising on an annexed block
-      d.lots.push(newLot(d, 23, 0.04, false)); // fresh excavation
+      for (let n = 0; n < 100; n++) d.lots.push(newLot(d, n, 1, true));
+      d.lots.push(newLot(d, 100, 0.6, false));  // tower rising on an annexed block
+      d.lots.push(newLot(d, 101, 0.04, false)); // fresh excavation
     });
 
     function emitCitySnapshot() {

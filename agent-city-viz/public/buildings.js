@@ -114,6 +114,10 @@
     school:  { style: 'brick',    hue: 8,   s: 32, l: 56 },  // brick red
     power:   { style: 'concrete', hue: 212, s: 8,  l: 64 },  // bare concrete
     transit: { style: 'concrete', hue: 200, s: 16, l: 64 },  // steel grey-blue
+    police:  { style: 'concrete', hue: 218, s: 18, l: 60 },  // pale civic grey-blue
+    hospital:{ style: 'glass',    hue: 192, s: 10, l: 80 },  // clean white / teal glass
+    fire:    { style: 'brick',    hue: 4,   s: 40, l: 50 },  // fire-engine red brick
+    prison:  { style: 'concrete', hue: 36,  s: 6,  l: 58 },  // drab tan concrete
   };
   function buildingStyle(lot, _district) {
     const b = lot.building || {};
@@ -123,6 +127,15 @@
     const cs = CAT_STYLE[cat] || CAT_STYLE.com;
     const hue = (cs.hue + ((seed >>> 12) % 25) - 12 + 360) % 360; // ±12 per-seed
     const col = { h: hue, s: cs.s, l: cs.l + ((seed >>> 4) % 9) - 4 };
+    // neighborhood cleanliness: grimier/desaturated in poorer areas, a touch
+    // brighter downtown/uptown. Subtle so the category palette still dominates.
+    if (typeof lot.block === 'number' && C.neighborhoodFor) {
+      const t = C.NEIGHBORHOODS[C.neighborhoodFor(lot.block).klass];
+      if (t && t.buildingTint) {
+        col.l += t.buildingTint.dl || 0;
+        col.s = Math.max(0, col.s + (t.buildingTint.ds || 0));
+      }
+    }
     return { style: cs.style, col, seed, hue, type, cat };
   }
 
@@ -206,6 +219,19 @@
   function fillCell(ctx, side, tx, ty, w, d, z0, f, p0, p1, zLoFrac, zHiFrac, fill, frame) {
     const zLo = z0 + (f + zLoFrac) * C.FLOOR_H;
     const zHi = z0 + (f + zHiFrac) * C.FLOOR_H;
+    const a = edgePt(side, tx, ty, w, d, p0, zHi);
+    const b = edgePt(side, tx, ty, w, d, p1, zHi);
+    const c = edgePt(side, tx, ty, w, d, p1, zLo);
+    const e = edgePt(side, tx, ty, w, d, p0, zLo);
+    poly(ctx, [a, b, c, e]);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    if (frame) { ctx.strokeStyle = frame; ctx.lineWidth = 0.6; ctx.stroke(); }
+  }
+
+  // A flat signage/door panel on one wall face, spanning param [p0,p1] (tiles)
+  // and ABSOLUTE height [zLo,zHi] (px) — like fillCell but not tied to a floor.
+  function facePanel(ctx, side, tx, ty, w, d, p0, p1, zLo, zHi, fill, frame) {
     const a = edgePt(side, tx, ty, w, d, p0, zHi);
     const b = edgePt(side, tx, ty, w, d, p1, zHi);
     const c = edgePt(side, tx, ty, w, d, p1, zLo);

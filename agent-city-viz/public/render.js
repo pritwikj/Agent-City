@@ -27,6 +27,7 @@
   let lastGroundVersion = -1;
   const GROUND_RES = 2;
   const GROUND_MAX_PX = 8192;
+  const PATH_BUDGET = 16; // A* searches/frame shared by pedestrians + traffic
 
   // ---- Canvas sizing ----------------------------------------------------------
   function resize() {
@@ -73,18 +74,25 @@
 
     for (const slot of blocks) {
       const o = C.blockOrigin(slot);
+      // neighborhood tint: lush green uptown, drier/greyer in poorer areas
+      const prof = C.NEIGHBORHOODS[C.neighborhoodFor(slot).klass] || C.NEIGHBORHOODS.middle;
+      const grass = C.tintHex(C.PAL.grass, prof.grass);
+      const grassEdge = C.tintHex(C.PAL.grassEdge, prof.grass);
+      const grassHi = C.tintHex(C.PAL.grassHi, prof.grass);
+      const sidewalk = C.tintHex(C.PAL.sidewalk, prof.sidewalk);
+      const curb = C.tintHex(C.PAL.curb, prof.sidewalk);
       // full block as asphalt, with a slightly darker outer kerb edge
       C.drawDiamond(g, o.tx, o.ty, B, B, C.PAL.road, C.PAL.roadEdge);
       // sidewalk ring (the 6x6 interior) with a crisp curb line
-      C.drawDiamond(g, o.tx + 1, o.ty + 1, B - 2, B - 2, C.PAL.sidewalk, C.PAL.curb);
+      C.drawDiamond(g, o.tx + 1, o.ty + 1, B - 2, B - 2, sidewalk, curb);
       // grass interior: darker base + lighter inset = a soft, un-flat lawn
-      C.drawDiamond(g, o.tx + 1.3, o.ty + 1.3, B - 2.6, B - 2.6, C.PAL.grass, C.PAL.grassEdge);
-      C.drawDiamond(g, o.tx + 1.85, o.ty + 1.85, B - 3.7, B - 3.7, C.PAL.grassHi);
+      C.drawDiamond(g, o.tx + 1.3, o.ty + 1.3, B - 2.6, B - 2.6, grass, grassEdge);
+      C.drawDiamond(g, o.tx + 1.85, o.ty + 1.85, B - 3.7, B - 3.7, grassHi);
       // internal alley seams — thin paved paths on the parcel grid lines that
       // divide the 6x6 interior into its 3x3 lots (cosmetic; citizens still
       // walk only the perimeter ring). Hidden under any building/tree on top.
-      for (const gx of [3, 5]) C.drawDiamond(g, o.tx + gx - 0.16, o.ty + 1, 0.32, B - 2, C.PAL.sidewalk);
-      for (const gy of [3, 5]) C.drawDiamond(g, o.tx + 1, o.ty + gy - 0.16, B - 2, 0.32, C.PAL.sidewalk);
+      for (const gx of [3, 5]) C.drawDiamond(g, o.tx + gx - 0.16, o.ty + 1, 0.32, B - 2, sidewalk);
+      for (const gy of [3, 5]) C.drawDiamond(g, o.tx + 1, o.ty + gy - 0.16, B - 2, 0.32, sidewalk);
       // dashed warm centre-line around the road ring
       g.strokeStyle = 'rgba(230,193,77,0.55)';
       g.lineWidth = 0.8;
@@ -175,26 +183,41 @@
   function addParcelZone(list, d, block, p) {
     const po = C.parcelOrigin(block, p);
     const seed = C.hash32(d.key + ':zone:' + block + ':' + p);
-    const r = seed % 10;
+    const prof = C.NEIGHBORHOODS[C.neighborhoodFor(block).klass] || C.NEIGHBORHOODS.middle;
     const patchDepth = C.depthKey(po.tx + 0.05, po.ty + 0.05); // flat ground sits behind features
     const tree = (sx, sy, sd) => list.push({
       depth: C.depthKey(po.tx + sx, po.ty + sy),
       draw: (ctx2) => drawTree(ctx2, po.tx + sx, po.ty + sy, sd),
     });
     const push = (sx, sy, draw) => list.push({ depth: C.depthKey(po.tx + sx, po.ty + sy), draw });
-    if (r < 4) {                                   // park: a few trees, maybe a pond
+    // Weighted zoning biased by neighborhood: lush parks + fountains/plazas
+    // uptown; bare, worn, littered lots in poorer areas.
+    const W = [
+      ['park', 3 * prof.foliage + 0.2],
+      ['grove', 2 * prof.foliage],
+      ['plaza', 3 * prof.landmarkProb],
+      ['lawn', 1.4],
+      ['land', 3 * prof.wornProb + 0.05],
+    ];
+    let tot = 0; for (const e of W) tot += e[1];
+    let roll = ((seed % 1000) / 1000) * tot;
+    let zone = 'lawn';
+    for (const e of W) { if (roll < e[1]) { zone = e[0]; break; } roll -= e[1]; }
+    const dense = prof.foliage >= 0.8;
+    if (zone === 'park') {                          // park: a few trees, maybe a pond
       tree(0.6, 0.7, seed); tree(1.4, 1.3, seed >>> 5);
+      if (dense) tree(1.0, 0.5, seed >>> 9);
       if ((seed >>> 3) & 1) push(1.4, 0.7, (c) => drawPond(c, po.tx + 1.4, po.ty + 0.7));
-    } else if (r < 6) {                            // grove: dense trees
+    } else if (zone === 'grove') {                  // grove: dense trees
       tree(0.55, 0.6, seed); tree(1.3, 0.7, seed >>> 4);
       tree(0.8, 1.4, seed >>> 8); tree(1.5, 1.45, seed >>> 12);
-    } else if (r < 8) {                            // plaza: paved square + fountain/trees
+    } else if (zone === 'plaza') {                  // plaza: paved square + fountain/trees
       list.push({ depth: patchDepth, draw: (c) => C.drawDiamond(c, po.tx + 0.15, po.ty + 0.15, 1.7, 1.7, C.PAL.plaza, 'rgba(0,0,0,0.06)') });
       if ((seed >> 2) & 1) push(1, 1, (c) => drawFountain(c, po.tx + 1, po.ty + 1));
       else { tree(0.5, 0.5, seed); tree(1.5, 1.5, seed >>> 6); }
-    } else if (r < 9) {                            // open lawn: leave the grass bare
-      /* nothing */
-    } else {                                       // landfill: dirt + mounds + debris
+    } else if (zone === 'lawn') {                   // open lawn: mostly bare grass
+      if (prof.foliage >= 0.6 && ((seed >>> 6) & 1)) tree(1.0, 1.0, seed >>> 7);
+    } else {                                        // landfill: dirt + mounds + debris
       list.push({ depth: patchDepth, draw: (c) => C.drawDiamond(c, po.tx + 0.1, po.ty + 0.1, 1.8, 1.8, C.PAL.dirt, 'rgba(0,0,0,0.08)') });
       push(0.75, 0.8, (c) => drawMound(c, po.tx + 0.75, po.ty + 0.8, seed, 1));
       push(1.4, 1.35, (c) => drawMound(c, po.tx + 1.4, po.ty + 1.35, seed >>> 7, 0.8));
@@ -242,6 +265,10 @@
     resize();
     camera.update(dt);
     C.updateCitizens(dt, now);
+    // ambient life: ration A* across pedestrians + traffic, then advance them
+    if (C.graph) C.graph.resetBudget(PATH_BUDGET);
+    if (C.pop) C.pop.update(dt, now, camera);
+    if (C.traffic) C.traffic.update(dt, now, camera);
 
     const dpr = window.devicePixelRatio || 1;
     const vt = camera.viewTransform();
@@ -275,6 +302,8 @@
     collectLotDrawables(list, now);
     collectParkDrawables(list);
     C.collectCitizenDrawables(list, now);
+    if (C.pop) C.pop.collectDrawables(list, now, camera);
+    if (C.traffic) C.traffic.collectDrawables(list, now, camera);
     list.sort((a, b) => a.depth - b.depth);
     for (const d of list) d.draw(ctx);
 
@@ -287,6 +316,8 @@
   // ---- City event plumbing (called from client.js) --------------------------------------
   function applyCitySnapshot(city) {
     C.applyCity(city);
+    if (C.pop) C.pop.reset();       // residents are derived from the city
+    if (C.traffic) C.traffic.reset();
     camera.setBounds(C.worldBounds());
   }
 

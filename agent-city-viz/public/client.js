@@ -173,8 +173,10 @@
 
   function refreshHud() {
     const c = R.counts();
-    elPop.textContent = c.sessions;
-    elCrews.textContent = c.crews;
+    // POPULATION = ambient residents (grows with housing); CREWS = live agents
+    const pop = (C.pop && C.pop.population) ? C.pop.population() : 0;
+    elPop.textContent = pop >= 1000 ? (pop / 1000).toFixed(1) + 'k' : pop;
+    elCrews.textContent = c.sessions + c.crews;
     elRate.textContent = (c.throughput || 0).toFixed ? Number(c.throughput || 0).toFixed(1) : c.throughput;
     const pct = Math.round((c.errorRate || 0) * 100);
     elInc.textContent = pct + '%';

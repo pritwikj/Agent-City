@@ -61,6 +61,57 @@ export function hash32(str) {
   return h >>> 0;
 }
 
+// ── Neighborhoods (concentric Burgess + sector Hoyt + seeded jitter) ─────────
+// A block's spiral position decides its metro character: a tall DOWNTOWN core
+// at the center, a poorer INNER-city ring, then SUBURBS (upper/middle/working)
+// that vary by compass sector. MIRROR of public/config.js neighborhoodFor()
+// (klass derivation must stay byte-identical) — change both together.
+const _spiralCache = [{ bx: 0, by: 0 }];
+const _SPIRAL_DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+const _spiralState = { x: 0, y: 0, dir: 0, run: 1, stepInRun: 0, legInRun: 0 };
+function spiralSlot(s) {
+  while (_spiralCache.length <= s) {
+    const st = _spiralState;
+    st.x += _SPIRAL_DIRS[st.dir][0];
+    st.y += _SPIRAL_DIRS[st.dir][1];
+    st.stepInRun++;
+    if (st.stepInRun >= st.run) {
+      st.stepInRun = 0;
+      st.dir = (st.dir + 1) % 4;
+      st.legInRun++;
+      if (st.legInRun >= 2) { st.legInRun = 0; st.run++; }
+    }
+    _spiralCache.push({ bx: st.x, by: st.y });
+  }
+  return _spiralCache[s];
+}
+
+const NB = { DOWNTOWN_R: 0, INNER_R: 1 };  // compact core, inner ring, then suburbs
+const SUBURB_TIERS = ['working', 'middle', 'upper'];
+const _hoodCache = new Map();
+export function neighborhoodFor(blockSlot) {
+  let h = _hoodCache.get(blockSlot);
+  if (h) return h;
+  const { bx, by } = spiralSlot(blockSlot);
+  const ring = Math.max(Math.abs(bx), Math.abs(by));
+  const jit = hash32('hood:' + bx + ',' + by);
+  const effRing = Math.max(0, ring + ((jit & 3) === 0 ? 1 : (jit & 7) === 1 ? -1 : 0));
+  let klass;
+  if (effRing <= NB.DOWNTOWN_R) klass = 'downtown';
+  else if (effRing <= NB.INNER_R) klass = 'inner';
+  else {
+    const sector = ((Math.round(Math.atan2(by, bx) / (Math.PI / 4)) % 8) + 8) % 8;
+    let score = hash32('sector:' + sector) % 3;
+    if (effRing >= 5) score -= ((jit >>> 6) & 1);
+    const j2 = (jit >>> 8) % 5;
+    if (j2 === 0) score += 1; else if (j2 === 1) score -= 1;
+    klass = SUBURB_TIERS[Math.max(0, Math.min(2, score))];
+  }
+  h = { klass, ring };
+  _hoodCache.set(blockSlot, h);
+  return h;
+}
+
 // ── Building types (pure-random, maturity-biased selection) ──────────────────
 // Every lot rolls a type from a seeded weighted draw whose pool shifts as the
 // district matures (n = lot index): young districts favor houses/parks, mature
@@ -70,11 +121,18 @@ export function hash32(str) {
 export const BUILDING_TYPES = {
   house:         { category: 'res',     floors: [1, 2],   foot: [[1, 1]] },
   apartment:     { category: 'res',     floors: [3, 6],   foot: [[1, 1], [1, 2]] },
-  office:        { category: 'com',     floors: [7, 14],  foot: [[1, 2]] },
-  skyscraper:    { category: 'com',     floors: [16, 40], foot: [[2, 2]] },
+  office:        { category: 'com',     floors: [7, 14],   foot: [[1, 2]] },
+  skyscraper:    { category: 'com',     floors: [20, 110], foot: [[2, 2]] },
   school:        { category: 'school',  floors: [2, 4],   foot: [[1, 2], [2, 2]] },
   power_station: { category: 'power',   floors: [3, 4],   foot: [[2, 2]] },
   transit:       { category: 'transit', floors: [2, 3],   foot: [[1, 2], [2, 2]] },
+  // ── civic services (Cities-Skylines style; off the density chain like the
+  //    other civic types — they grow within their own floor band, never into a
+  //    tower) ──
+  police:        { category: 'police',   floors: [2, 4],  foot: [[1, 2], [2, 2]] },
+  hospital:      { category: 'hospital',  floors: [4, 9],  foot: [[2, 2]] },
+  fire_station:  { category: 'fire',      floors: [2, 3],  foot: [[1, 2], [2, 2]] },
+  prison:        { category: 'prison',    floors: [2, 3],  foot: [[2, 2]] },
   park:          { category: 'park',    floors: [0, 0],   foot: [[2, 2]] },
   landfill:      { category: 'landfill', floors: [0, 0],  foot: [[2, 2]] },
 };
@@ -82,8 +140,8 @@ export const BUILDING_TYPES = {
 // Weighted pools by maturity band; first band whose `until` exceeds n wins.
 export const TYPE_WEIGHTS = [
   { until: 4,        w: { house: 5, park: 3, apartment: 2, landfill: 1, school: 1 } },
-  { until: 10,       w: { apartment: 4, office: 3, school: 2, transit: 2, house: 2, park: 2, power_station: 1 } },
-  { until: Infinity, w: { office: 4, skyscraper: 3, power_station: 2, transit: 2, school: 1, park: 1 } },
+  { until: 10,       w: { apartment: 4, office: 3, school: 2, transit: 2, house: 2, park: 2, power_station: 1, police: 1, fire_station: 1, hospital: 1 } },
+  { until: Infinity, w: { office: 4, skyscraper: 3, power_station: 2, transit: 2, school: 1, park: 1, police: 1, fire_station: 1, hospital: 1, prison: 1 } },
 ];
 
 export function pickType(seed, n) {
@@ -99,22 +157,21 @@ export function pickType(seed, n) {
   return entries[0][0];
 }
 
+// Height is a deterministic but skewed draw across the type's [lo, hi] band:
+// biasing toward the low end gives many short buildings and a long tail of tall
+// ones — a realistic skyline. Skyscrapers get the steepest skew so most are
+// mid-rise while a rare few spike toward the cap.
 export function floorsForType(type, seed) {
   const [lo, hi] = (BUILDING_TYPES[type] || BUILDING_TYPES.office).floors;
-  return hi > lo ? lo + (seed % (hi - lo + 1)) : lo;
+  if (hi <= lo) return lo;
+  const r = ((seed >>> 0) % 100000) / 100000;        // deterministic [0,1)
+  const skew = type === 'skyscraper' ? 3 : 1.5;      // higher = longer tail
+  return lo + Math.round((hi - lo) * Math.pow(r, skew));
 }
 
 export function footprintForType(type, seed) {
   const fps = (BUILDING_TYPES[type] || BUILDING_TYPES.office).foot;
   return fps[seed % fps.length].slice();
-}
-
-// A growable building type by district maturity — used when a session's lot
-// would otherwise roll a non-growable park/landfill (its work must show).
-export function growableFallback(n) {
-  if (n < 4) return 'house';
-  if (n < 10) return 'apartment';
-  return 'office';
 }
 
 // ── Zoning ───────────────────────────────────────────────────────────────────
@@ -146,6 +203,40 @@ export function pickZone(seed) {
 function densityRank(type) { return DENSITY_CHAIN.indexOf(type); } // -1 if off-chain
 function zoneCapType(zone) { return ZONE_CAP[zone] || 'office'; }
 function maxFloorsForType(type) { return (BUILDING_TYPES[type] || BUILDING_TYPES.office).floors[1]; }
+
+// ── Spatial growth: type + zone by neighborhood (not maturity) ───────────────
+// The zone still CAPS density (so the renovation engine is unchanged) — these
+// just decide the STARTING type and cap per neighborhood, so a downtown lot can
+// climb into a tower while a suburban lot tops out at houses/flats.
+const HOOD_TYPE_WEIGHTS = {
+  downtown: { office: 4, skyscraper: 3, apartment: 3, transit: 1, hospital: 1, police: 1 },
+  inner:    { apartment: 5, office: 2, house: 2, landfill: 1, transit: 1, police: 1, prison: 1, fire_station: 1 },
+  upper:    { house: 5, apartment: 2, park: 2, school: 1, hospital: 1, fire_station: 1 },
+  middle:   { house: 4, apartment: 3, school: 2, park: 1, police: 1, fire_station: 1, hospital: 1 },
+  working:  { house: 5, apartment: 2, landfill: 1, transit: 1, park: 1, police: 1, fire_station: 1, prison: 1 },
+};
+function pickTypeForHood(seed, hood) {
+  const w = HOOD_TYPE_WEIGHTS[hood.klass] || HOOD_TYPE_WEIGHTS.middle;
+  const entries = Object.entries(w);
+  let total = 0;
+  for (const [, wt] of entries) total += wt;
+  let roll = seed % total;
+  for (const [type, wt] of entries) {
+    if (roll < wt) return type;
+    roll -= wt;
+  }
+  return entries[0][0];
+}
+function zoneForHood(hood, seed) {
+  const r = seed % 10;
+  switch (hood.klass) {
+    case 'downtown': return r < 7 ? 'downtown' : 'commercial';
+    case 'inner':    return r < 5 ? 'commercial' : 'residential';
+    case 'upper':    return r < 2 ? 'commercial' : 'residential';
+    case 'middle':   return r < 3 ? 'commercial' : 'residential';
+    default:         return 'residential'; // working-class
+  }
+}
 
 // Tier survives only as a coarse "bigness" hint for client roof furniture.
 export function tierForFloors(floors) {
@@ -298,15 +389,15 @@ export class CityModel extends EventEmitter {
       district.blocks.push(block);
     }
     const seed = hash32(`${district.key}:${n}`);
-    // A session's structure must be able to reflect the work poured into it, so
-    // it never starts as a non-growable park/landfill (those stay as ambient
-    // greenery via the client's tree filler). Keep the maturity bias otherwise.
-    let type = pickType(seed, n);
-    if (type === 'park' || type === 'landfill') type = growableFallback(n);
-    // Zoning: a fixed, weighted-random zone caps how dense/tall this lot may get.
-    // Clamp the starting building so it never begins above its zone (a low-rise
-    // zone can't open as a skyscraper).
-    const zone = pickZone(seed >>> 11);
+    const blockSlot = district.blocks[blockIdx];
+    // Spatial growth: the block's place in the metro decides its character — a
+    // tall DOWNTOWN core, a denser/poorer INNER ring, low-rise SUBURBS — so type
+    // and zone derive from the neighborhood rather than from maturity. The zone
+    // still CAPS density, so renovations climb a downtown lot into a tower while
+    // a suburban lot tops out at houses/flats (a park/landfill just won't grow).
+    const hood = neighborhoodFor(blockSlot);
+    const zone = zoneForHood(hood, seed >>> 11);
+    let type = pickTypeForHood(seed, hood);
     if (densityRank(type) > densityRank(zoneCapType(zone))) type = zoneCapType(zone);
     const floors = Math.min(floorsForType(type, seed >>> 8), maxFloorsForType(type));
     const lot = {
@@ -446,14 +537,19 @@ export class CityModel extends EventEmitter {
     const d = this.ensureDistrict(project);
     let lot = this.lotForSession(d, sessionId);
     // A finished structure + a still-running session: pick a finished, growable
-    // building to RENOVATE next. Its OWN building counts, so a session can keep
-    // raising the same one into a skyscraper, or send the crew to improve a
-    // neighbour. Only drop the unit if nothing anywhere can still grow.
+    // building to RENOVATE next (at random). A growable lot's OWN building is a
+    // candidate, so a session can keep raising the same one into a skyscraper; a
+    // finished park/landfill can't grow, so the crew always moves to a neighbour.
+    // If nothing standing can still grow, break new ground so work never vanishes.
     if (lot.state === 'complete') {
       const target = this.pickUpgradeable(d, `${sessionId}:hop:${lot.id}`);
-      if (!target) { this.emit('dirty'); return; }
-      lot = this.rebindSession(d, sessionId, target);
-      this.startUpgrade(d, lot, lot.sessionId);
+      if (target) {
+        lot = this.rebindSession(d, sessionId, target);
+        this.startUpgrade(d, lot, lot.sessionId);
+      } else {
+        lot = this.breakGround(d);
+        this.rebindSession(d, sessionId, lot);
+      }
     }
     lot.progress += TUNING.WORK_PER_TOOL;
     d.totalWork += TUNING.WORK_PER_TOOL;
