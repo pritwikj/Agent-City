@@ -14,6 +14,10 @@
 // ── Thresholds (tunable) ────────────────────────────────────────────────────
 export const DIM_THRESHOLD_MS = 45_000; // 45s silent -> dim / sit down
 export const DESPAWN_THRESHOLD_MS = 120_000; // 120s silent -> despawn
+// A session mid-turn fires no hooks while Claude reasons, so the normal silence
+// thresholds don't apply. We only reap it after this long hard cap, to catch
+// sessions that crashed mid-turn and will never send a Stop.
+export const TURN_HARD_DESPAWN_MS = 900_000; // 15min mid-turn -> assume crashed
 export const REAP_INTERVAL_MS = 5_000; // how often the reaper runs
 
 /**
@@ -30,6 +34,13 @@ export function startReaper(world, opts = {}) {
 
     for (const rec of world.entities.values()) {
       const silent = now - (rec.lastSeen ?? 0);
+
+      // Mid-turn crews stay on-site (thinking counts as working) and never dim,
+      // until the crash-fallback hard cap.
+      if (rec.turnActive) {
+        if (silent >= TURN_HARD_DESPAWN_MS) toDespawn.push(rec.id);
+        continue;
+      }
 
       if (silent >= DESPAWN_THRESHOLD_MS) {
         toDespawn.push(rec.id);

@@ -85,6 +85,21 @@
     g.fillStyle = '#83bd69';
     g.fillRect(minX, minY, maxX - minX, maxY - minY);
 
+    // ---- Block-grid occupancy so streets connect into one network -----------
+    // A block's roads are its 1-tile border; where two blocks touch, their
+    // borders merge into a single continuous 2-tile street. We record which
+    // grid cells are built so lane markings run down the TRUE centre of a
+    // shared street (one line, not one per block) and crosswalks land only on
+    // genuine junctions — the difference between a connected grid and a field
+    // of boxed-off road loops.
+    const cells = new Map();
+    for (const slot of blocks) {
+      const s = C.spiralSlot(slot);
+      cells.set(s.bx + ',' + s.by, { bx: s.bx, by: s.by, o: C.blockOrigin(slot) });
+    }
+    const has = (bx, by) => cells.has(bx + ',' + by);
+
+    // ---- Pavement + lawns (blocks are tile-disjoint, so no cross-overwrite) --
     for (const slot of blocks) {
       const o = C.blockOrigin(slot);
       // neighborhood tint: lush green uptown, drier/greyer in poorer areas
@@ -93,13 +108,29 @@
       const grassEdge = C.tintHex(C.PAL.grassEdge, prof.grass);
       const grassHi = C.tintHex(C.PAL.grassHi, prof.grass);
       const sidewalk = C.tintHex(C.PAL.sidewalk, prof.sidewalk);
-      const curb = C.tintHex(C.PAL.curb, prof.sidewalk);
-      // full block as asphalt, with a slightly darker outer kerb edge
-      C.drawDiamond(g, o.tx, o.ty, B, B, C.PAL.road, C.PAL.roadEdge);
-      // sidewalk ring (the 6x6 interior) with a crisp curb line. The grass is
-      // held well inside this so a proper ~0.7-tile walkway is exposed all the
-      // way around the block for pedestrians (population.js) to travel on.
+      const sidewalkHi = C.tintHex(C.PAL.curb, prof.sidewalk);       // lighter paving
+      const curb = C.tintHex(C.PAL.sidewalkEdge, prof.sidewalk);     // dark kerb line
+      // Asphalt fill with NO outline: an outline would stroke a dark seam down
+      // the centre of every shared street and box each block in. Same-colour
+      // fills of adjacent blocks merge seamlessly into one road surface.
+      C.drawDiamond(g, o.tx, o.ty, B, B, C.PAL.road);
+      // Raised sidewalk ring (6x6 interior) with a crisp dark kerb on the road
+      // edge, then a lighter scored band so the walkway clearly reads as poured
+      // concrete (not road) — the visible footway pedestrians travel on.
       C.drawDiamond(g, o.tx + 1, o.ty + 1, B - 2, B - 2, sidewalk, curb);
+      C.drawDiamond(g, o.tx + 1.22, o.ty + 1.22, B - 2.44, B - 2.44, sidewalkHi);
+      // expansion-joint ticks across the walkway so it doesn't read as a flat slab
+      g.strokeStyle = 'rgba(120,128,138,0.35)'; g.lineWidth = 0.5; g.setLineDash([]);
+      for (let t = 2; t < B - 1; t += 2) {
+        const a = C.worldToScreen(o.tx + t, o.ty + 1, 0), b1 = C.worldToScreen(o.tx + t, o.ty + 1.7, 0);
+        const a2 = C.worldToScreen(o.tx + t, o.ty + B - 1.7, 0), b2 = C.worldToScreen(o.tx + t, o.ty + B - 1, 0);
+        const c = C.worldToScreen(o.tx + 1, o.ty + t, 0), d1 = C.worldToScreen(o.tx + 1.7, o.ty + t, 0);
+        const c2 = C.worldToScreen(o.tx + B - 1.7, o.ty + t, 0), d2 = C.worldToScreen(o.tx + B - 1, o.ty + t, 0);
+        g.beginPath();
+        g.moveTo(a.x, a.y); g.lineTo(b1.x, b1.y); g.moveTo(a2.x, a2.y); g.lineTo(b2.x, b2.y);
+        g.moveTo(c.x, c.y); g.lineTo(d1.x, d1.y); g.moveTo(c2.x, c2.y); g.lineTo(d2.x, d2.y);
+        g.stroke();
+      }
       // grass interior: darker base + lighter inset = a soft, un-flat lawn
       C.drawDiamond(g, o.tx + 1.7, o.ty + 1.7, B - 3.4, B - 3.4, grass, grassEdge);
       C.drawDiamond(g, o.tx + 2.0, o.ty + 2.0, B - 4.0, B - 4.0, grassHi);
@@ -108,19 +139,60 @@
       // walk only the perimeter ring). Hidden under any building/tree on top.
       for (const gx of [3, 5]) C.drawDiamond(g, o.tx + gx - 0.16, o.ty + 1, 0.32, B - 2, sidewalk);
       for (const gy of [3, 5]) C.drawDiamond(g, o.tx + 1, o.ty + gy - 0.16, B - 2, 0.32, sidewalk);
-      // dashed warm centre-line around the road ring
-      g.strokeStyle = 'rgba(230,193,77,0.55)';
-      g.lineWidth = 0.8;
-      g.setLineDash([4, 6]);
-      const c0 = C.worldToScreen(o.tx + 0.5, o.ty + 0.5, 0);
-      const c1 = C.worldToScreen(o.tx + B - 0.5, o.ty + 0.5, 0);
-      const c2 = C.worldToScreen(o.tx + B - 0.5, o.ty + B - 0.5, 0);
-      const c3 = C.worldToScreen(o.tx + 0.5, o.ty + B - 0.5, 0);
-      g.beginPath();
-      g.moveTo(c0.x, c0.y); g.lineTo(c1.x, c1.y); g.lineTo(c2.x, c2.y);
-      g.lineTo(c3.x, c3.y); g.closePath();
-      g.stroke();
+    }
+
+    // ---- Street markings: one centre-line per street + junction crosswalks ---
+    // Drawn after ALL pavement so a marking is never clipped by a neighbour's
+    // fill. A centre-line is drawn ONCE, on the shared boundary between two
+    // adjacent blocks (the real middle of the 2-tile street), inset from each
+    // end so junctions read as clean crossings rather than overlapping loops.
+    const seg = (ax, ay, bx2, by2, color, w, pattern) => {
+      const p0 = C.worldToScreen(ax, ay, 0), p1 = C.worldToScreen(bx2, by2, 0);
+      g.strokeStyle = color; g.lineWidth = w; g.lineCap = 'butt';
+      g.setLineDash(pattern || []);
+      g.beginPath(); g.moveTo(p0.x, p0.y); g.lineTo(p1.x, p1.y); g.stroke();
       g.setLineDash([]);
+    };
+    // Zebra crosswalk: rungs laid across a street arm. (cx,cy) = arm centre on a
+    // block corner; (dx,dy) = unit along the street; span = half street width.
+    const crosswalk = (cx, cy, dx, dy, span) => {
+      const px = -dy, py = dx;                       // across-street direction
+      g.strokeStyle = 'rgba(238,240,242,0.7)'; g.lineWidth = 1.0; g.lineCap = 'butt';
+      g.setLineDash([]);
+      for (let i = -2; i <= 2; i++) {
+        const t = i * 0.2;
+        const a = C.worldToScreen(cx + dx * t - px * span, cy + dy * t - py * span, 0);
+        const b = C.worldToScreen(cx + dx * t + px * span, cy + dy * t + py * span, 0);
+        g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
+      }
+    };
+    // Every road edge gets exactly ONE centre-line. A shared edge (two blocks
+    // touching) draws a single line on the boundary — the true middle of the
+    // 2-tile street — and is drawn only by the left/top block so it is never
+    // doubled. A frontage edge (no neighbour: the cluster's outer ring) draws a
+    // line down the middle of its own lane, so no street is left unmarked.
+    const LINE = 'rgba(232,226,196,0.85)';           // soft warm centre-line
+    const D = [4, 5];
+    for (const { bx, by, o } of cells.values()) {
+      const x0 = o.tx, y0 = o.ty, x1 = o.tx + B, y1 = o.ty + B;
+      // --- vertical streets ---
+      if (has(bx + 1, by)) {                          // shared: line on the boundary
+        seg(x1, y0 + 1.2, x1, y1 - 1.2, LINE, 0.7, D);
+        if (has(bx, by - 1) || has(bx + 1, by - 1)) crosswalk(x1, y0 + 0.5, 0, 1, 0.9);
+        if (has(bx, by + 1) || has(bx + 1, by + 1)) crosswalk(x1, y1 - 0.5, 0, 1, 0.9);
+      } else {                                        // frontage: line down own lane
+        seg(x1 - 0.5, y0 + 1.2, x1 - 0.5, y1 - 1.2, LINE, 0.7, D);
+      }
+      if (!has(bx - 1, by)) seg(x0 + 0.5, y0 + 1.2, x0 + 0.5, y1 - 1.2, LINE, 0.7, D);
+      // --- horizontal streets ---
+      if (has(bx, by + 1)) {                          // shared: line on the boundary
+        seg(x0 + 1.2, y1, x1 - 1.2, y1, LINE, 0.7, D);
+        if (has(bx - 1, by) || has(bx - 1, by + 1)) crosswalk(x0 + 0.5, y1, 1, 0, 0.9);
+        if (has(bx + 1, by) || has(bx + 1, by + 1)) crosswalk(x1 - 0.5, y1, 1, 0, 0.9);
+      } else {                                        // frontage: line down own lane
+        seg(x0 + 1.2, y1 - 0.5, x1 - 1.2, y1 - 0.5, LINE, 0.7, D);
+      }
+      if (!has(bx, by - 1)) seg(x0 + 1.2, y0 + 0.5, x1 - 1.2, y0 + 0.5, LINE, 0.7, D);
     }
     camera.setBounds(C.worldBounds());
   }

@@ -56,7 +56,7 @@ import express from 'express';
 import { WebSocketServer } from 'ws';
 
 import { WorldModel } from './worldModel.js';
-import { CityModel } from './city.js';
+import { CityModel, TUNING } from './city.js';
 import { loadCity, createPersister } from './persist.js';
 import { createIngest } from './ingest.js';
 import {
@@ -93,6 +93,25 @@ world.on('work', (w) => {
     console.error('[city] record failed:', err?.message ?? err);
   }
 });
+
+// Thinking builds too: a session mid-turn with no tool running (status
+// 'thinking') is reasoning, and that's still work. Credit it on a timer at
+// TUNING.WORK_PER_THINK_SEC units/sec, routed through the same recordWork path
+// so it binds/raises a building exactly like a tool call — pure volume of work.
+const THINK_TICK_MS = 2_000;
+const thinkTimer = setInterval(() => {
+  const amount = TUNING.WORK_PER_THINK_SEC * (THINK_TICK_MS / 1000);
+  if (amount <= 0) return;
+  for (const rec of world.entities.values()) {
+    if (rec.kind !== 'session' || !rec.turnActive || rec.status !== 'thinking') continue;
+    try {
+      city.recordWork({ project: rec.project, sessionId: rec.id, amount });
+    } catch (err) {
+      console.error('[city] think-work failed:', err?.message ?? err);
+    }
+  }
+}, THINK_TICK_MS);
+if (typeof thinkTimer.unref === 'function') thinkTimer.unref();
 
 // When the city binds a session to a building, tag the session entity so the
 // client can place its worker at that construction site.

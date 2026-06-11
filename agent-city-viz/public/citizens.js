@@ -51,6 +51,8 @@
     if (st === 'finished') return 'leaving';
     if (st === 'spawning') return 'arriving';
     if (st === 'working') return 'working';
+    // Mid-turn reasoning between tool calls: keep the crew building on-site.
+    if (st === 'thinking') return 'working';
     return 'idle';
   }
 

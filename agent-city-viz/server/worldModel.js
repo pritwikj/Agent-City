@@ -469,6 +469,10 @@ export class WorldModel extends EventEmitter {
       toolCount: 0,
       errorCount: 0,
       dimmed: false,
+      // True between UserPromptSubmit and Stop: the session is mid-turn, so it's
+      // actively thinking/working even when no hook is firing (no event is sent
+      // during model reasoning). The reaper keeps mid-turn crews on-site.
+      turnActive: false,
       recentEvents: [],
       recentToolActions: [],
     };
@@ -530,13 +534,18 @@ export class WorldModel extends EventEmitter {
     if (!rec) return;
     this.touch(rec, now);
     rec.dimmed = false;
+    // The turn begins: Claude starts thinking. No hook fires during reasoning,
+    // so we mark the session working ('thinking') and turnActive so the reaper
+    // keeps the crew on-site through the whole turn, not just during tool calls.
+    rec.turnActive = true;
+    rec.status = 'thinking';
     this.pushRecentEvent(rec, 'UserPromptSubmit');
     // Intentionally do NOT derive a title from the raw prompt text. We wait for
     // Claude Code's AI-generated tab title (read from the transcript) and only
     // surface that. Until it arrives the session shows its project-name / short
     // -id fallback rather than the user's prompt.
-    // Status stays idle; emit a transient "prompt" signal ("receiving orders").
     this.emitDelta(rec.id, {
+      status: 'thinking',
       dimmed: false,
       signal: 'prompt',
     });
@@ -600,12 +609,15 @@ export class WorldModel extends EventEmitter {
     }
 
     if (stack.length === 0) {
-      // No more in-flight tools -> back to idle, clear current tool.
-      rec.status = 'idle';
+      // No more in-flight tools. If the turn is still live the agent is back to
+      // thinking (model reasoning fires no hook), so keep the crew visibly busy
+      // rather than idle; only a Stop returns it to true idle.
+      const next = rec.turnActive ? 'thinking' : 'idle';
+      rec.status = next;
       rec.currentTool = null;
       rec.currentToolFamily = null;
       rec.currentAction = null;
-      changes.status = 'idle';
+      changes.status = next;
       changes.currentTool = null;
       changes.currentToolFamily = null;
       changes.currentAction = null;
@@ -721,9 +733,10 @@ export class WorldModel extends EventEmitter {
   onStop(event, now) {
     const rec = this.ensureSession(event, now);
     if (!rec) return;
-    // Stop returns the session to idle but does NOT despawn it.
-    // Clear any in-flight tools that never got a Post (defensive).
+    // Stop returns the session to idle but does NOT despawn it. The turn is
+    // over (Claude is waiting for the user again), so the crew may now age out.
     this.inFlight.delete(rec.id);
+    rec.turnActive = false;
     rec.status = 'idle';
     rec.currentTool = null;
     rec.currentToolFamily = null;

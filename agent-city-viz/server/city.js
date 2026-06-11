@@ -44,6 +44,8 @@ export const SAVE_VERSION = 1;
 // ── Tuning (the whole growth economy lives here) ─────────────────────────────
 export const TUNING = {
   WORK_PER_TOOL: 1,        // work units per successful PostToolUse
+  WORK_PER_THINK_SEC: 0.15,// work units accrued per second a session spends thinking
+                           // (mid-turn, no tool running) — thinking builds too
   BASE_REQUIRED: 30,       // building n needs BASE + STEP*n work units...
   REQUIRED_STEP: 15,
   REQUIRED_CAP: 400,       // ...capped so megatowers stay reachable
@@ -682,8 +684,13 @@ export class CityModel extends EventEmitter {
     this.emitDelta(district, lot, 'complete');
   }
 
-  /** +1 work unit from a successful tool use (tool kind is irrelevant). */
-  recordWork({ project, sessionId }) {
+  /**
+   * Add work to a session's building. Default is +1 unit from a successful tool
+   * use (tool kind is irrelevant); thinking time passes a smaller fractional
+   * `amount`. Either way it's pure VOLUME of work — same code path, same growth.
+   */
+  recordWork({ project, sessionId, amount }) {
+    const inc = typeof amount === 'number' && amount > 0 ? amount : TUNING.WORK_PER_TOOL;
     const d = this.ensureDistrict(project);
     let lot = this.lotForSession(d, sessionId);
     // A finished structure + a still-running session: pick a finished, growable
@@ -701,8 +708,8 @@ export class CityModel extends EventEmitter {
         this.rebindSession(d, sessionId, lot);
       }
     }
-    lot.progress += TUNING.WORK_PER_TOOL;
-    d.totalWork += TUNING.WORK_PER_TOOL;
+    lot.progress += inc;
+    d.totalWork += inc;
     if (lot.progress >= lot.required) this.finishLot(d, lot);
     else this.emitDelta(d, lot, 'progress');
     this.emit('dirty');
