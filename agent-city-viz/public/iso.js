@@ -150,7 +150,7 @@
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       markManual();
-      const factor = Math.exp(-e.deltaY * 0.0012);
+      const factor = Math.exp(-e.deltaY * 0.0025);
       const nz = C.clamp(cam.targetZoom * factor, MIN_ZOOM, MAX_ZOOM);
       // zoom about the cursor: keep the world point under the mouse fixed
       const rect = canvas.getBoundingClientRect();

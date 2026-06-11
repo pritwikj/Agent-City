@@ -29,9 +29,10 @@
   const RECALC_MS = 700;           // population / destination recompute cadence
   // Tiles to shift toward the block interior so a ped drawn at (tile + 0.5)
   // lands on the SIDEWALK band, not the road. Ring tiles sit at block-local
-  // 0.5 / 7.5 (the asphalt); the exposed sidewalk spans local 1..1.7, so ~0.85
-  // centres the walker on the gray walkway, clear of the car lanes.
-  const PED_OFFSET = 0.85;
+  // 0.5 / 7.5 (the car lane); the visible sidewalk slab spans local 0.6..1.0
+  // (between the asphalt and the building line), so ~0.35 centres the walker on
+  // the kerb-side footway, clear of the cars in the middle of the street.
+  const PED_OFFSET = 0.35;
   const CULL_MARGIN = 48;          // px beyond viewport before we stop drawing
 
   const SPEED = {                  // tiles / second
@@ -172,6 +173,9 @@
       path: null, pi: 0,
       pendingLinger: 0, lingerUntil: 0,
       moving: false,
+      // commuter-rail rider state (see Transit section); 'walk' = ordinary ped.
+      mode: 'walk', tstate: null, line: null,
+      homeSid: -1, destSid: -1, hx: 0, hy: 0, dx2: 0, dy2: 0, fgx: 0, fgy: 0,
       walkPhase: Math.random() * Math.PI * 2,
       pacePhase: Math.random() * Math.PI * 2,
       alpha: 0,
@@ -187,11 +191,11 @@
   }
 
   function retire(n) {
-    const it = peds.keys();
-    for (let i = 0; i < n; i++) {
-      const k = it.next();
-      if (k.done) break;
-      peds.delete(k.value);
+    let removed = 0;
+    for (const [id, p] of peds) {
+      if (removed >= n) break;
+      if (p.mode === 'transit') continue;   // don't yank a commuter mid-journey
+      peds.delete(id); removed++;
     }
   }
 
@@ -207,10 +211,99 @@
     return t;
   }
 
+  // ---- Transit: commuters ride the rail network -----------------------------
+  // A downtown-bound commuter walks to the depot nearest home, waits, boards when
+  // a train/shuttle dwells there, rides hidden, alights at the destination depot,
+  // then walks on. Suburb residents ride their branch shuttle to the core depot;
+  // core residents ride the loop train between core depots. The depot a rider
+  // uses must already be built — readiness is gated by C.rail.transit.stations().
+  const TRANSIT_PROB = 0.5;        // chance such a commuter takes a train
+
+  // deterministic per-ped scatter so a waiting crowd doesn't stack on one tile
+  function platformSpot(tx, ty, ped) {
+    const jx = ((C.hash32(ped.id + ':sx') % 100) / 100 - 0.5) * 0.9;
+    const jy = ((C.hash32(ped.id + ':sy') % 100) / 100 - 0.5) * 0.9;
+    return { tx: tx + jx, ty: ty + jy };
+  }
+
+  function tryTransit(ped) {
+    const R = C.rail && C.rail.transit;
+    if (!R || !R.ready() || !downtownBlocks.length) return false;
+    const sts = R.stations();
+    if (!sts || sts.length < 2) return false;
+    // nearest built depot to home
+    let home = null, hb = Infinity;
+    for (const s of sts) { const d = Math.hypot(s.tx - ped.tx, s.ty - ped.ty); if (d < hb) { hb = d; home = s; } }
+    if (!home) return false;
+    const g = randRingTile(downtownBlocks[(Math.random() * downtownBlocks.length) | 0]);
+    let line, dest;
+    if (home.core) {                          // ride the loop to the core depot nearest downtown
+      line = 'core';
+      let best = null, bb = Infinity;
+      for (const s of sts) { if (!s.core) continue; const d = Math.hypot(s.tx - g.tx, s.ty - g.ty); if (d < bb) { bb = d; best = s; } }
+      dest = best;
+      if (!dest || dest.sid === home.sid) return false;   // already at the best stop — just walk
+    } else {                                  // suburb: ride the branch shuttle to its core depot
+      line = home.line;
+      dest = sts.find((s) => s.sid === home.coreSid);
+      if (!dest) return false;                // the core terminus isn't built yet
+    }
+    const path = C.graph.findPath(ped.tx, ped.ty, home.tx, home.ty, false, true);
+    if (!path || path.length < 2) return false;
+    ped.mode = 'transit'; ped.tstate = 'toStation'; ped.line = line;
+    ped.homeSid = home.sid; ped.destSid = dest.sid;
+    ped.hx = home.tx; ped.hy = home.ty; ped.dx2 = dest.tx; ped.dy2 = dest.ty;
+    ped.fgx = g.tx; ped.fgy = g.ty;
+    ped.path = path; ped.pi = 1; ped.pendingLinger = 0;
+    return true;
+  }
+
+  // Advance a rider whenever it has no active walking path. The walking legs
+  // (to the platform, then from the destination platform to the goal) are driven
+  // by the normal step() loop; this only handles the boarding/riding hand-offs.
+  function handleTransit(ped, now) {
+    const dwell = C.rail.transit.dwellSid(ped.line);
+    switch (ped.tstate) {
+      case 'toStation': {            // reached the access node — step onto the platform
+        ped.path = [{ tx: ped.tx, ty: ped.ty }, platformSpot(ped.hx, ped.hy, ped)];
+        ped.pi = 1; ped.tstate = 'approach';
+        break;
+      }
+      case 'approach':               // now standing on the platform
+        ped.tstate = 'waiting'; ped.moving = false;
+        break;
+      case 'waiting':                // board when our train is at the platform
+        ped.moving = false;
+        if (dwell === ped.homeSid) ped.tstate = 'riding';
+        break;
+      case 'riding':                 // hidden aboard until the destination stop
+        ped.moving = false;
+        if (dwell === ped.destSid) {
+          const spot = platformSpot(ped.dx2, ped.dy2, ped);
+          ped.tx = spot.tx; ped.ty = spot.ty; ped.alpha = 0;   // reappear, fade in
+          ped.path = null; ped.tstate = 'fromStation';
+        }
+        break;
+      case 'fromStation': {          // walk from the platform to the original goal
+        if (!ped.path) {
+          const path = C.graph.findPath(ped.tx, ped.ty, ped.fgx, ped.fgy, false, true);
+          if (path && path.length >= 2) { ped.path = path; ped.pi = 1; break; }
+        }
+        ped.mode = 'walk'; ped.tstate = null;                  // arrived — rejoin foot traffic
+        ped.pendingLinger = 2000 + Math.random() * 4000;
+        break;
+      }
+      default:
+        ped.mode = 'walk'; ped.tstate = null;
+    }
+  }
+
   // ---- Routing + motion ------------------------------------------------------
   function pickGoalAndPath(ped, now) {
     let gx, gy, linger = 0;
     const t = ped.type;
+    if ((t === 'business' || t === 'tourist' || t === 'resident') &&
+        Math.random() < TRANSIT_PROB && tryTransit(ped)) return true;
     if (t === 'vendor') {
       const pt = randLeisure();
       if (pt) { gx = pt.tx; gy = pt.ty; linger = 8000 + Math.random() * 14000; }
@@ -222,7 +315,7 @@
       gx = r.tx; gy = r.ty;
     }
     if (gx == null) { const r = randRingTile(allBlocks[(Math.random() * allBlocks.length) | 0]); gx = r.tx; gy = r.ty; }
-    const path = C.graph.findPath(ped.tx, ped.ty, gx, gy);
+    const path = C.graph.findPath(ped.tx, ped.ty, gx, gy, false, true); // avoid highways
     if (!path || path.length < 2) return false;   // budget spent or already there
     ped.path = path; ped.pi = 1; ped.pendingLinger = linger;
     return true;
@@ -276,6 +369,7 @@
       if (ped.alpha < 1) ped.alpha = Math.min(1, ped.alpha + dt * 2.2);
       if (ped.lingerUntil > now) { ped.moving = false; ped.walkPhase += dt * 0.6; continue; }
       if (ped.path && ped.pi < ped.path.length) { step(ped, dt, now); continue; }
+      if (ped.mode === 'transit') { handleTransit(ped, now); continue; }
       if (ped.pendingLinger) { ped.lingerUntil = now + ped.pendingLinger; ped.pendingLinger = 0; ped.moving = false; continue; }
       pickGoalAndPath(ped, now); // no-op until a search slot frees up
       ped.moving = false;
@@ -394,6 +488,7 @@
     const cw = (canvas && canvas.clientWidth) || 1e5;
     const ch = (canvas && canvas.clientHeight) || 1e5;
     for (const ped of peds.values()) {
+      if (ped.tstate === 'riding') continue;   // aboard the train — not on the street
       if (vt) {
         const s = C.worldToScreen(ped.tx + 0.5, ped.ty + 0.5, 0);
         const sx = s.x * vt.zoom + vt.offX, sy = s.y * vt.zoom + vt.offY;

@@ -374,7 +374,7 @@
     ctx.beginPath();
     ctx.arc(p.x, headY, 2.6, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = cz.isOrchestrator ? '#f2f2f0' : '#f2c12e';
+    ctx.fillStyle = cz.isOrchestrator ? '#f2f2f0' : '#ffb400';
     ctx.beginPath();
     ctx.arc(p.x, headY - 0.8, 2.8, Math.PI, 0);
     ctx.fill();

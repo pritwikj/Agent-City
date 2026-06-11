@@ -55,7 +55,10 @@
     if (C.infra && C.infra.drivableTiles) {
       for (const t of C.infra.drivableTiles()) {
         const id = pack(t.tx, t.ty);
-        if (!nodes.has(id)) nodes.set(id, { id, tx: t.tx, ty: t.ty, nbrs: [] });
+        // hw = highway/ramp tile: cars route over it, pedestrians never do.
+        // Ring tiles are inserted first, so a tile shared with a block stays a
+        // plain (walkable) node — only genuinely off-block asphalt is flagged.
+        if (!nodes.has(id)) nodes.set(id, { id, tx: t.tx, ty: t.ty, nbrs: [], hw: true });
       }
     }
     for (const n of nodes.values()) {
@@ -141,14 +144,16 @@
    * Returns null when the graph isn't ready, the endpoints can't snap, or the
    * per-frame search budget is spent on a cache miss (caller retries later).
    */
-  function findPath(ax, ay, bx, by, force) {
+  function findPath(ax, ay, bx, by, force, avoidHw) {
     ensureBuilt();
     const start = nearestNode(ax, ay);
     const goal = nearestNode(bx, by);
     if (!start || !goal) return null;
     if (start.id === goal.id) return [{ tx: start.tx, ty: start.ty }];
 
-    const ck = start.id + '_' + goal.id;
+    // Pedestrian searches (avoidHw) get their own cache namespace so a car's
+    // highway-using path is never handed back to someone on foot.
+    const ck = (avoidHw ? 'h' : '') + start.id + '_' + goal.id;
     const hit = cache.get(ck);
     if (hit) { cache.delete(ck); cache.set(ck, hit); return hit.slice(); }
     if (!force && frameBudget <= 0) return null; // defer the expensive search
@@ -173,6 +178,9 @@
       if (h < bestH) { bestH = h; best = node; }
       const gc = g.get(cur);
       for (const nid of node.nbrs) {
+        // Pedestrians refuse to step onto highway/ramp asphalt (the goal tile
+        // is always a walkable ring tile, so it's never excluded here).
+        if (avoidHw && nid !== goal.id) { const nn = nodes.get(nid); if (nn && nn.hw) continue; }
         const ng = gc + 1;
         const prev = g.has(nid) ? g.get(nid) : Infinity;
         if (ng < prev) {

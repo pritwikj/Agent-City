@@ -511,6 +511,11 @@
     { h: 34,  s: 28, l: 52, glassH: 36  }, // bronze
     { h: 210, s: 7,  l: 70, glassH: 205 }, // silver / white metal
     { h: 30,  s: 14, l: 66, glassH: 42  }, // warm limestone / stone
+    { h: 218, s: 12, l: 28, glassH: 214 }, // charcoal / black glass (432 Park, Salesforce dark)
+    { h: 44,  s: 30, l: 64, glassH: 48  }, // champagne / gold glass
+    { h: 18,  s: 32, l: 46, glassH: 22  }, // prewar warm brick / terracotta
+    { h: 150, s: 16, l: 60, glassH: 150 }, // green-blue spandrel glass
+    { h: 28,  s: 8,  l: 80, glassH: 40  }, // pale art-deco cast stone (Empire State)
   ];
 
   function clampInset(pl, inset) {
@@ -533,6 +538,25 @@
       }
       const a = Math.round(floors * 0.68);
       return [{ z0: 0, f: a, inset: 0 }, { z0: a * FH, f: floors - a, inset: 0.22 }];
+    }
+    if (massing === 3) {                        // art-deco wedding cake (Empire State)
+      // a broad base, then a tall shaft, then several tight stepped setbacks
+      // that march in toward a slender tower — the classic NYC 1930s ziggurat.
+      const n = floors >= 40 ? 5 : 4;
+      const baseF = Math.max(2, Math.round(floors * 0.34));
+      const segs = [{ z0: 0, f: baseF, inset: 0 }];
+      let used = baseF, z = baseF * FH;
+      const rest = floors - baseF;
+      for (let i = 1; i < n; i++) {
+        const hi = Math.round((rest * i) / (n - 1));
+        const lo = Math.round((rest * (i - 1)) / (n - 1));
+        const f = hi - lo;
+        if (f <= 0) continue;
+        segs.push({ z0: z, f, inset: 0.10 + i * 0.13 });
+        z += f * FH; used += f;
+      }
+      if (used < floors) segs[segs.length - 1].f += floors - used;
+      return segs;
     }
     const n = 4, per = floors / n, segs = [];   // gentle continuous taper
     for (let i = 0; i < n; i++) {
@@ -606,8 +630,8 @@
     const cx = tx + w / 2, cy = ty + d / 2;
     const st = { hue: mat.h, seed };
     const kinds = type === 'skyscraper'
-      ? ['mech', 'antenna', 'spire', 'pyramid', 'stepped', 'antenna']
-      : ['flat', 'flat', 'mech', 'antenna'];
+      ? ['mech', 'antenna', 'spire', 'pyramid', 'stepped', 'antenna', 'deco', 'dome', 'deco']
+      : ['flat', 'flat', 'mech', 'antenna', 'watertank', 'watertank'];
     const crown = kinds[(seed >>> 11) % kinds.length];
     const FH = C.FLOOR_H;
 
@@ -665,6 +689,57 @@
       ctx.strokeStyle = '#aeb6bf'; ctx.lineWidth = 1.4;
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(a.x, a.y - 15); ctx.stroke();
       ctx.fillStyle = '#e0524a'; ctx.beginPath(); ctx.arc(a.x, a.y - 16, 1.8, 0, Math.PI * 2); ctx.fill();
+    } else if (crown === 'deco') {              // art-deco crown: tight tiered setbacks + a tall fluted needle (Empire State / Chrysler)
+      let bz = h, bw = w, bd = d, bx = tx, by = ty;
+      for (let i = 0; i < 3; i++) {
+        const ins = 0.16 + i * 0.12;
+        const sw = w * (1 - ins * 2), sd = d * (1 - ins * 2);
+        bx = tx + (w - sw) / 2; by = ty + (d - sd) / 2; bw = sw; bd = sd;
+        drawBox(ctx, bx, by, bw, bd, bz, FH * 0.7, { h: col.h, s: col.s, l: C.clamp(col.l + 4 + i * 3, 12, 88) });
+        bz += FH * 0.7;
+      }
+      // metallic finial mast with a beacon — the spire that makes it read deco
+      const base = w2s(cx, cy, bz);
+      const tip = { x: base.x, y: base.y - 30 };
+      ctx.strokeStyle = '#cfd6dd'; ctx.lineWidth = 2.2;
+      ctx.beginPath(); ctx.moveTo(base.x, base.y); ctx.lineTo(tip.x, tip.y); ctx.stroke();
+      ctx.strokeStyle = 'rgba(207,214,221,0.6)'; ctx.lineWidth = 1;
+      for (let i = 1; i <= 3; i++) {                 // fluted rings up the needle
+        const ry = base.y - (30 * i) / 4, rw = 3.2 * (1 - i / 4);
+        ctx.beginPath(); ctx.moveTo(tip.x - rw, ry); ctx.lineTo(tip.x + rw, ry); ctx.stroke();
+      }
+      ctx.fillStyle = '#ffd34d'; ctx.beginPath(); ctx.arc(tip.x, tip.y, 2, 0, Math.PI * 2); ctx.fill();
+    } else if (crown === 'dome') {              // rounded glowing glass crown (Salesforce / US Bank / Wilshire Grand)
+      const ins = 0.22;
+      const cw = w * (1 - ins * 2), cd = d * (1 - ins * 2);
+      drawBox(ctx, tx + (w - cw) / 2, ty + (d - cd) / 2, cw, cd, h, FH * 1.6, { h: mat.glassH, s: 30, l: 52 });
+      const top = w2s(cx, cy, h + FH * 1.6);
+      const rx = (cw * C.TILE_W) / 2 * 0.5;
+      const g = ctx.createRadialGradient(top.x, top.y, 1, top.x, top.y, rx);
+      g.addColorStop(0, 'rgba(255,247,210,0.95)');
+      g.addColorStop(0.6, 'hsla(' + mat.glassH + ',45%,72%,0.85)');
+      g.addColorStop(1, 'hsla(' + mat.glassH + ',40%,48%,0.7)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.ellipse(top.x, top.y, rx, rx * 0.7, 0, Math.PI, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.ellipse(top.x, top.y, rx, rx * 0.7, 0, Math.PI, Math.PI * 2); ctx.stroke();
+    } else if (crown === 'watertank') {         // NYC rooftop wooden water tank on a steel cradle
+      drawRoofCap(ctx, tx, ty, w, d, h, st);
+      const tkx = tx + w * 0.58, tky = ty + d * 0.3;
+      const legH = FH * 0.7, tankH = FH * 1.3, tw = Math.min(0.5, w * 0.3), td = Math.min(0.5, d * 0.3);
+      // steel cradle legs
+      ctx.strokeStyle = '#5b6066'; ctx.lineWidth = 1;
+      for (const [lx, ly] of [[0, 0], [tw, 0], [tw, td], [0, td]]) {
+        const lo = w2s(tkx + lx, tky + ly, h), hi = w2s(tkx + lx, tky + ly, h + legH);
+        ctx.beginPath(); ctx.moveTo(lo.x, lo.y); ctx.lineTo(hi.x, hi.y); ctx.stroke();
+      }
+      // wooden barrel
+      drawBox(ctx, tkx, tky, tw, td, h + legH, tankH, { h: 26, s: 34, l: 42 });
+      // conical lid
+      const apex = w2s(tkx + tw / 2, tky + td / 2, h + legH + tankH + FH * 0.5);
+      const eT = w2s(tkx + tw, tky, h + legH + tankH), sT = w2s(tkx + tw, tky + td, h + legH + tankH), wT = w2s(tkx, tky + td, h + legH + tankH);
+      poly(ctx, [wT, sT, apex]); ctx.fillStyle = '#4a3622'; ctx.fill();
+      poly(ctx, [sT, eT, apex]); ctx.fillStyle = '#3a2a1a'; ctx.fill();
     }
   }
 
@@ -672,9 +747,10 @@
     const seed = st.seed;
     const mat = TOWER_MAT[(seed >>> 2) % TOWER_MAT.length];
     const col = { h: mat.h, s: mat.s, l: C.clamp(mat.l + ((seed >>> 4) % 7) - 3, 12, 84) };
-    let massing = (seed >>> 5) % 3;             // 0 slab, 1 setback, 2 taper
-    if (type === 'office' && massing === 2) massing = (seed >>> 9) & 1;        // offices: no deep taper
+    let massing = (seed >>> 5) % 4;             // 0 slab, 1 setback, 2 taper, 3 art-deco
+    if (type === 'office' && massing >= 2) massing = (seed >>> 9) & 1;          // offices: slab/setback only
     if (type === 'skyscraper' && massing === 0 && ((seed >>> 17) & 1)) massing = 1; // towers rarely plain slabs
+    if (massing === 3 && floors < 24) massing = 1;                              // wedding cake needs height
     const variant = ['curtain', 'banded', 'piers'][(seed >>> 8) % 3];
     const segs = towerSegments(floors, massing, seed);
     for (const sg of segs) {
@@ -948,7 +1024,7 @@
     let topH = floors * C.FLOOR_H;
     if (cat === 'power') topH = Math.max(topH, C.FLOOR_H * 5.0) + 22;        // cooling towers + steam
     else if (b.type === 'skyscraper') topH += C.FLOOR_H * 3 + 36;           // crown variety (spire/pyramid/stepped + antenna)
-    else if (cat === 'com') topH += C.FLOOR_H * 1.6 + 24;                    // office crowns (mech room / antenna)
+    else if (cat === 'com') topH += C.FLOOR_H * 2.5 + 30;                    // office crowns (mech room / antenna / water tank)
     else if (cat === 'transit') topH += 14;                                  // canopy lip
     else if (cat === 'fire') topH += C.FLOOR_H * 2.2 + 12;                   // hose-drying tower
     else if (cat === 'prison') topH += C.FLOOR_H * 1.6 + C.FLOOR_H * 0.9 + 14; // watchtowers

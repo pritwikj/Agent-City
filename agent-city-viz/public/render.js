@@ -114,26 +114,29 @@
       // the centre of every shared street and box each block in. Same-colour
       // fills of adjacent blocks merge seamlessly into one road surface.
       C.drawDiamond(g, o.tx, o.ty, B, B, C.PAL.road);
-      // Raised sidewalk ring (6x6 interior) with a crisp dark kerb on the road
-      // edge, then a lighter scored band so the walkway clearly reads as poured
-      // concrete (not road) — the visible footway pedestrians travel on.
-      C.drawDiamond(g, o.tx + 1, o.ty + 1, B - 2, B - 2, sidewalk, curb);
-      C.drawDiamond(g, o.tx + 1.22, o.ty + 1.22, B - 2.44, B - 2.44, sidewalkHi);
-      // expansion-joint ticks across the walkway so it doesn't read as a flat slab
-      g.strokeStyle = 'rgba(120,128,138,0.35)'; g.lineWidth = 0.5; g.setLineDash([]);
-      for (let t = 2; t < B - 1; t += 2) {
-        const a = C.worldToScreen(o.tx + t, o.ty + 1, 0), b1 = C.worldToScreen(o.tx + t, o.ty + 1.7, 0);
-        const a2 = C.worldToScreen(o.tx + t, o.ty + B - 1.7, 0), b2 = C.worldToScreen(o.tx + t, o.ty + B - 1, 0);
-        const c = C.worldToScreen(o.tx + 1, o.ty + t, 0), d1 = C.worldToScreen(o.tx + 1.7, o.ty + t, 0);
-        const c2 = C.worldToScreen(o.tx + B - 1.7, o.ty + t, 0), d2 = C.worldToScreen(o.tx + B - 1, o.ty + t, 0);
+      // Kerb-side sidewalk: a concrete slab hugging the building line (local
+      // 0.6..1.0), so it sits BETWEEN the car lane in the middle of the street
+      // and the buildings — and, unlike the old interior ring, is never hidden
+      // under a parcel's footprint (parcels start at local 1.0). A dark kerb on
+      // the asphalt edge + a lighter scored band sell it as poured concrete.
+      C.drawDiamond(g, o.tx + 0.6, o.ty + 0.6, B - 1.2, B - 1.2, sidewalk, curb);
+      C.drawDiamond(g, o.tx + 0.78, o.ty + 0.78, B - 1.56, B - 1.56, sidewalkHi);
+      // expansion-joint ticks across the footway so it doesn't read as a flat slab
+      g.strokeStyle = 'rgba(120,128,138,0.4)'; g.lineWidth = 0.5; g.setLineDash([]);
+      for (let t = 1; t < B; t += 1.5) {
+        const a = C.worldToScreen(o.tx + t, o.ty + 0.6, 0), b1 = C.worldToScreen(o.tx + t, o.ty + 1.0, 0);
+        const a2 = C.worldToScreen(o.tx + t, o.ty + B - 1.0, 0), b2 = C.worldToScreen(o.tx + t, o.ty + B - 0.6, 0);
+        const c = C.worldToScreen(o.tx + 0.6, o.ty + t, 0), d1 = C.worldToScreen(o.tx + 1.0, o.ty + t, 0);
+        const c2 = C.worldToScreen(o.tx + B - 1.0, o.ty + t, 0), d2 = C.worldToScreen(o.tx + B - 0.6, o.ty + t, 0);
         g.beginPath();
         g.moveTo(a.x, a.y); g.lineTo(b1.x, b1.y); g.moveTo(a2.x, a2.y); g.lineTo(b2.x, b2.y);
         g.moveTo(c.x, c.y); g.lineTo(d1.x, d1.y); g.moveTo(c2.x, c2.y); g.lineTo(d2.x, d2.y);
         g.stroke();
       }
-      // grass interior: darker base + lighter inset = a soft, un-flat lawn
-      C.drawDiamond(g, o.tx + 1.7, o.ty + 1.7, B - 3.4, B - 3.4, grass, grassEdge);
-      C.drawDiamond(g, o.tx + 2.0, o.ty + 2.0, B - 4.0, B - 4.0, grassHi);
+      // grass interior (the building zone): laid right up to the sidewalk kerb at
+      // local 1.0 — darker base + lighter inset = a soft, un-flat lawn
+      C.drawDiamond(g, o.tx + 1.0, o.ty + 1.0, B - 2.0, B - 2.0, grass, grassEdge);
+      C.drawDiamond(g, o.tx + 1.3, o.ty + 1.3, B - 2.6, B - 2.6, grassHi);
       // internal alley seams — thin paved paths on the parcel grid lines that
       // divide the 6x6 interior into its 3x3 lots (cosmetic; citizens still
       // walk only the perimeter ring). Hidden under any building/tree on top.
@@ -408,8 +411,9 @@
     if (C.graph) C.graph.resetBudget(PATH_BUDGET);
     if (C.pop) C.pop.update(dt, now, camera);
     if (C.traffic) C.traffic.update(dt, now, camera);
-    // ambient infrastructure (beltway traffic, commuter rail, airport)
+    // ambient infrastructure (beltway, connector freeways, commuter rail, airport)
     if (C.highway) C.highway.update(dt, now, camera);
+    if (C.connectors) C.connectors.update(dt, now, camera);
     if (C.rail) C.rail.update(dt, now, camera);
     if (C.airport) C.airport.update(dt, now, camera);
 
@@ -453,6 +457,7 @@
     if (C.pop) C.pop.collectDrawables(list, now, camera);
     if (C.traffic) C.traffic.collectDrawables(list, now, camera);
     if (C.highway) C.highway.collectDrawables(list, now, camera);
+    if (C.connectors) C.connectors.collectDrawables(list, now, camera);
     if (C.rail) C.rail.collectDrawables(list, now, camera);
     if (C.airport) C.airport.collectDrawables(list, now, camera);
     list.sort((a, b) => a.depth - b.depth);
@@ -470,6 +475,7 @@
     if (C.pop) C.pop.reset();       // residents are derived from the city
     if (C.traffic) C.traffic.reset();
     if (C.highway) C.highway.reset();
+    if (C.connectors) C.connectors.reset();
     if (C.rail) C.rail.reset();
     if (C.airport) C.airport.reset();
     camera.setBounds(C.worldBounds());

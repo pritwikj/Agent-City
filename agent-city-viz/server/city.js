@@ -50,11 +50,12 @@ export const TUNING = {
   REQUIRED_STEP: 15,
   REQUIRED_CAP: 400,       // ...capped so megatowers stay reachable
   LOTS_PER_BLOCK: 9,       // 3x3 parcels per block (see layout model above)
-  // Organic spread (see chooseSite): a SPRAWLING city — it almost always breaks
-  // ground on a new block rather than packing existing ones, so the footprint
-  // stays wide and most blocks are low-density. MIRROR of public/citymodel.js.
+  // Organic spread (see chooseSite): a BALANCED city — below the density target
+  // it's a coin flip between breaking ground on a new frontier block and
+  // infilling an existing community, so the footprint grows in step with the
+  // neighborhoods filling out. MIRROR of public/citymodel.js.
   SPREAD_TARGET: 3,        // avg buildings/block before infill beats expansion
-  EXPAND_PROB: 0.78,       // strong frontier bias -> sprawl (~1.3 bldgs/block steady state)
+  EXPAND_PROB: 0.5,        // balanced: ~50/50 new frontier block vs. infill existing community
   INFILL_EXPAND_PROB: 0.12,// once a block is dense, opening a new one is rare
 };
 
@@ -66,12 +67,19 @@ export const TUNING = {
 // sparsest. MIRROR of public/citymodel.js.
 const HOOD_INFILL_W = { downtown: 6, inner: 4, upper: 3, middle: 3, working: 2.5, rural: 0.7 };
 const PARCEL_W = [1, 2, 1, 2, 4, 2, 1, 2, 1];
-// Frontier-growth knobs: expansion grows from the EDGES of existing blocks in
-// seeded-random directions (NOT strictly inward-out along the spiral), so the
-// build ORDER is organic — a suburb pocket can develop before downtown, and
-// vice-versa. The density gradient still emerges later, from infill weighting.
-const LEAP_PROB = 0.11;   // chance a new block founds a detached satellite town
-const INWARD_PULL = 0.9;  // light centering — loose enough to let the metro sprawl outward
+// Multi-nucleus growth: the metro is NOT one contiguous blob spreading
+// center-out. It is a downtown CORE plus detached SATELLITE TOWNS — inner
+// suburbs and far-flung farm communities — founded across a real GAP and tied
+// back to the core by freeways (see public/infra.js connectors). Each town grows
+// from its OWN edge toward its OWN centre, so the gaps between towns persist (the
+// Southern-California look: a dense core, separate valley towns, open land and
+// farmland between them). MIRROR of public/citymodel.js — change both together.
+const SATELLITE_PROB = 0.10;     // chance an expansion founds a NEW detached town (lower: grow the towns we have, don't keep spawning lone parcels)
+const SATELLITE_GAP = 2;         // empty blocks between a new town and the core's edge
+const SATELLITE_MIN_BLOCKS = 4;  // the core needs a footing before it spins off towns
+const TOWN_PULL = 1.3;           // pull toward a town's OWN centre -> compact communities
+const SUBURB_TARGET = 6;         // blocks a satellite should reach to read as a REAL town (not a lone parcel)
+const SUBURB_BOOST = 3;          // how hard expansion favors an under-built satellite, fading to parity at SUBURB_TARGET
 
 /** A fresh random 32-bit unsigned value — the entropy source for groundbreaks. */
 function rand32() { return (Math.random() * 0x100000000) >>> 0; }
@@ -90,51 +98,128 @@ function weightedPick(items, weightOf, seed) {
 }
 
 /**
- * Pick a NEW (empty) block for the city to grow onto. Grows from the edges of
- * existing development in a seeded-random direction — not strictly inward-out —
- * so neighborhoods come up in an organic order. `isFree(slot)` guards against
- * reusing a slot already claimed by another district. MIRROR of
- * public/citymodel.js pickExpansionSlot().
+ * Partition the built blocks into TOWNS — maximal clusters of 8-connected block
+ * cells. The metro CORE is the cluster at the origin; every other cluster is a
+ * detached satellite town. Deterministic from the block order (so server +
+ * offline-demo client agree). MIRROR of public/citymodel.js clusterTowns().
  */
-function pickExpansionSlot(usedSlots, seed, isFree) {
-  const usedPos = new Set();
-  let maxRing = 0;
+function clusterTowns(usedSlots) {
+  const pts = [];
+  const idx = new Map();
   for (const s of usedSlots) {
     const { bx, by } = spiralSlot(s);
-    usedPos.add(bx + ',' + by);
-    maxRing = Math.max(maxRing, Math.abs(bx), Math.abs(by));
+    idx.set(bx + ',' + by, pts.length);
+    pts.push({ bx, by });
   }
-  // satellite leap: occasionally found a detached settlement out past the edge
-  if ((seed % 100) / 100 < LEAP_PROB) {
-    const r = maxRing + 1 + (seed % 3);
-    const ang = ((seed >>> 5) % 360) * Math.PI / 180;
-    const bx = Math.round(r * Math.cos(ang)), by = Math.round(r * Math.sin(ang));
-    if (!usedPos.has(bx + ',' + by)) {
-      const slot = slotForPos(bx, by);
-      if (isFree(slot)) return slot;
-    }
-  }
-  // frontier candidates: empty 8-neighbours of any built cell
-  const list = [];
-  const seen = new Set();
-  for (const s of usedSlots) {
-    const { bx, by } = spiralSlot(s);
+  const parent = pts.map((_, i) => i);
+  const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
     for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
       if (!dx && !dy) continue;
-      const nx = bx + dx, ny = by + dy, k = nx + ',' + ny;
+      const j = idx.get((p.bx + dx) + ',' + (p.by + dy));
+      if (j !== undefined) { const a = find(i), b = find(j); if (a !== b) parent[a] = b; }
+    }
+  }
+  const towns = new Map();
+  for (let i = 0; i < pts.length; i++) {
+    const r = find(i);
+    let t = towns.get(r);
+    if (!t) { t = { cells: [], sx: 0, sy: 0 }; towns.set(r, t); }
+    t.cells.push(pts[i]); t.sx += pts[i].bx; t.sy += pts[i].by;
+  }
+  const out = [];
+  for (const t of towns.values()) {
+    out.push({ cells: t.cells, cx: t.sx / t.cells.length, cy: t.sy / t.cells.length, size: t.cells.length });
+  }
+  return out;
+}
+
+/** Empty, free 8-neighbour block cells around a town's built cells. */
+function frontierOf(town, usedPos, isFree) {
+  const list = [];
+  const seen = new Set();
+  for (const c of town.cells) {
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      if (!dx && !dy) continue;
+      const nx = c.bx + dx, ny = c.by + dy, k = nx + ',' + ny;
       if (usedPos.has(k) || seen.has(k)) continue;
       seen.add(k);
       const slot = slotForPos(nx, ny);
       if (isFree(slot)) list.push({ slot, bx: nx, by: ny });
     }
   }
+  return list;
+}
+
+/**
+ * Found a NEW detached town: step out along a seeded compass corridor to a block
+ * a real GAP beyond the core's edge, requiring a clear 3x3 around it so it lands
+ * as a SEPARATE settlement. Returns a slot, or -1 when no corridor has room (the
+ * satellite ring is full -> the caller grows an existing town instead).
+ */
+function foundSatellite(usedPos, coreRing, seed, isFree) {
+  const DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+  const dist = coreRing + SATELLITE_GAP + (seed % 3);
+  for (let a = 0; a < DIRS.length; a++) {
+    const di = (((seed >>> 5) % DIRS.length) + a) % DIRS.length;
+    const bx = DIRS[di][0] * dist, by = DIRS[di][1] * dist;
+    let blocked = false;
+    for (let ex = -1; ex <= 1 && !blocked; ex++) for (let ey = -1; ey <= 1; ey++) {
+      if (usedPos.has((bx + ex) + ',' + (by + ey))) blocked = true;
+    }
+    if (blocked) continue;
+    const slot = slotForPos(bx, by);
+    if (isFree(slot)) return slot;
+  }
+  return -1;
+}
+
+/**
+ * Pick a NEW (empty) block for the city to grow onto. The metro grows as MANY
+ * towns, not one blob: with probability SATELLITE_PROB a groundbreak founds a
+ * fresh detached town out past the core; otherwise it extends an existing town
+ * from its own edge, pulled toward that town's centre so each stays a compact
+ * community and the gaps between towns persist. A town's distance from the
+ * centre decides its character (neighborhoodFor): near = suburb, far = farmland.
+ * `isFree(slot)` guards against reusing a claimed slot. MIRROR of
+ * public/citymodel.js pickExpansionSlot().
+ */
+function pickExpansionSlot(usedSlots, seed, isFree) {
+  const usedPos = new Set();
+  for (const s of usedSlots) { const { bx, by } = spiralSlot(s); usedPos.add(bx + ',' + by); }
+  const towns = clusterTowns(usedSlots);
+  // the metro core = the town containing the origin, else the largest cluster.
+  let core = null;
+  for (const t of towns) if (t.cells.some((c) => c.bx === 0 && c.by === 0)) { core = t; break; }
+  if (!core) for (const t of towns) if (!core || t.size > core.size) core = t;
+  let coreRing = 0;
+  if (core) for (const c of core.cells) coreRing = Math.max(coreRing, Math.abs(c.bx), Math.abs(c.by));
+
+  if (usedSlots.length >= SATELLITE_MIN_BLOCKS && (seed % 1000) / 1000 < SATELLITE_PROB) {
+    const slot = foundSatellite(usedPos, coreRing, seed, isFree);
+    if (slot >= 0) return slot;
+  }
+
+  // extend a town. Weight grows with size but SUBLINEARLY (sqrt), so the core
+  // still leads — BUT an under-built satellite gets a catch-up boost so it
+  // accretes into a real multi-block town instead of freezing at a lone parcel.
+  // The boost fades linearly to nothing as the town nears SUBURB_TARGET blocks,
+  // so once a suburb has grown up it falls back to plain sqrt parity.
+  const town = weightedPick(towns, (t) => {
+    const base = 0.5 + Math.sqrt(t.size);
+    if (t === core) return base;
+    const deficit = Math.max(0, SUBURB_TARGET - t.size) / SUBURB_TARGET;
+    return base * (1 + SUBURB_BOOST * deficit);
+  }, seed >>> 9);
+  let list = frontierOf(town, usedPos, isFree);
+  if (!list.length) {
+    for (const t of towns) for (const c of frontierOf(t, usedPos, isFree)) list.push(c);
+  }
   if (!list.length) { let s = 0; while (!isFree(s)) s++; return s; }
-  // gentle inward pull (keeps the metro centred) x per-cell seeded jitter (so
-  // the growth direction varies) — deliberately NO downtown class bias here, so
-  // the build ORDER is organic; density bias lives in infill instead.
   return weightedPick(list, (c) => {
-    const ring = Math.max(Math.abs(c.bx), Math.abs(c.by));
-    const pull = 1 + INWARD_PULL / (1 + ring);
+    const d = Math.hypot(c.bx - town.cx, c.by - town.cy);
+    const pull = 1 + TOWN_PULL / (1 + d);
     const jit = 0.35 + ((hash32('exp:' + c.bx + ',' + c.by + ':' + seed) % 1000) / 1000) * 0.65;
     return pull * jit;
   }, seed >>> 3).slot;

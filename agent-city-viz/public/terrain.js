@@ -68,10 +68,15 @@
   }
 
   // ---- City exclusion (kept off the developed footprint) --------------------
-  let exRect = null, exAir = null;
+  // The metro is no longer one rectangle: it's a core plus detached satellite
+  // towns, each tied back by a freeway. We keep a clearing around EVERY town (a
+  // wide one around the core for its beltway/rail; a tight rural one around a
+  // satellite so farmland reaches right up to it) and a thin clearing along each
+  // connector so trees never grow on the road.
+  let exRects = [], exAir = null;
   function refreshExclusion() {
-    exRect = null; exAir = null;
-    if (!C.infra) {
+    exRects = []; exAir = null;
+    if (!C.infra || !C.infra.townBounds) {
       const blocks = C.usedBlocks ? C.usedBlocks() : [];
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (const s of blocks) {
@@ -79,17 +84,29 @@
         x0 = Math.min(x0, o.tx); y0 = Math.min(y0, o.ty);
         x1 = Math.max(x1, o.tx + C.BLOCK_TILES - 1); y1 = Math.max(y1, o.ty + C.BLOCK_TILES - 1);
       }
-      if (x0 !== Infinity) exRect = { x0: x0 - EXCLUDE_MARGIN, y0: y0 - EXCLUDE_MARGIN, x1: x1 + EXCLUDE_MARGIN, y1: y1 + EXCLUDE_MARGIN };
+      if (x0 !== Infinity) exRects.push({ x0: x0 - EXCLUDE_MARGIN, y0: y0 - EXCLUDE_MARGIN, x1: x1 + EXCLUDE_MARGIN, y1: y1 + EXCLUDE_MARGIN });
       return;
     }
-    const b = C.infra.cityBounds && C.infra.cityBounds();
-    if (b) exRect = { x0: b.x0 - EXCLUDE_MARGIN, y0: b.y0 - EXCLUDE_MARGIN, x1: b.x1 + EXCLUDE_MARGIN, y1: b.y1 + EXCLUDE_MARGIN };
+    const tm = (C.infra.constants && C.infra.constants.TOWN_MARGIN) || 2;
+    for (const t of C.infra.townBounds()) {
+      const m = t.core ? EXCLUDE_MARGIN : tm;
+      exRects.push({ x0: t.x0 - m, y0: t.y0 - m, x1: t.x1 + m, y1: t.y1 + m });
+    }
+    if (C.infra.connectorCorridors) for (const r of C.infra.connectorCorridors()) exRects.push(r);
     const a = C.infra.airport && C.infra.airport();
     if (a) exAir = { x0: a.x0 - 3, y0: a.y0 - 3, x1: a.x1 + 3, y1: a.y1 + 3 };
   }
-  function isClear(tx, ty) {
-    if (exRect && tx >= exRect.x0 && tx <= exRect.x1 && ty >= exRect.y0 && ty <= exRect.y1) return false;
-    if (exAir && tx >= exAir.x0 && tx <= exAir.x1 && ty >= exAir.y0 && ty <= exAir.y1) return false;
+  // r = the feature's own radius (tiles). A feature is rejected when its BODY —
+  // not just its anchor point — would touch the developed footprint, so a big
+  // lake/hill/forest centred just outside the metro can't bleed over the
+  // roads, rail or buildings inside it.
+  function isClear(tx, ty, r) {
+    r = r || 0;
+    for (let i = 0; i < exRects.length; i++) {
+      const e = exRects[i];
+      if (tx >= e.x0 - r && tx <= e.x1 + r && ty >= e.y0 - r && ty <= e.y1 + r) return false;
+    }
+    if (exAir && tx >= exAir.x0 - r && tx <= exAir.x1 + r && ty >= exAir.y0 - r && ty <= exAir.y1 + r) return false;
     return true;
   }
 
@@ -276,10 +293,16 @@
         const jx = (ihash(cx, cy ^ 0x51) % 1000) / 1000, jy = (ihash(cx ^ 0x77, cy) % 1000) / 1000;
         const fx = cx * CELL + 0.6 + jx * (CELL - 1.2);
         const fy = cy * CELL + 0.6 + jy * (CELL - 1.2);
-        if (!isClear(fx, fy)) continue;
-
         const E = fbm(fx * SCALE_E, fy * SCALE_E);
         const M = fbm((fx + 311) * SCALE_M, (fy - 977) * SCALE_M);
+        // Reject the whole cell if the feature it will emit would reach into the
+        // metro. Big blobs (lakes, hills, forest canopy) need a wide clearance;
+        // small scatter (rocks, bushes, flowers) only a token one.
+        let clearR = 1.2;
+        if (E < SHORE) clearR = 3.4;        // lakes + their sandy shore
+        else if (E > HILL) clearR = 3.0;    // raised hills
+        else if (M > WET) clearR = 2.4;     // forest canopy
+        if (!isClear(fx, fy, clearR)) continue;
         const depth = C.depthKey(fx, fy);
 
         // ground colour wash (flat, drawn behind raised features)
