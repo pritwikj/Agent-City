@@ -4,7 +4,8 @@
 
    This is a SEPARATE, lighter layer from citizens.js (the agent "workers"):
      - Population is derived from COMPLETED residential buildings (houses,
-       apartments, plus downtown condos) — occupancy ~ floors x footprint.
+       townhouses, mansions, condos, apartments, plus downtown-tower penthouses)
+       — occupancy ~ floors x footprint.
      - Up to a rendered cap, pedestrians spawn from those homes, pick a goal
        (downtown for suits, parks/plazas for kids & vendors, a random block
        otherwise), A*-route on C.graph, walk it, then re-route on arrival.
@@ -60,8 +61,10 @@
     const area = (fp[0] || 1) * (fp[1] || 1);
     const floors = b.floors || 1;
     const cat = C.buildingCategory(b.type);
+    // res now spans house/townhouse/mansion/condo/apartment — all counted here
     if (cat === 'res') return Math.round(floors * area * 3);
-    // downtown condos: tall commercial towers in the core house penthouse folk
+    // downtown office/skyscraper towers still house some penthouse residents
+    // (this is separate from the 'condo' res type, so there's no double-count)
     if (cat === 'com' && C.neighborhoodFor(lot.block).klass === 'downtown') {
       return Math.round(floors * area * 0.6);
     }

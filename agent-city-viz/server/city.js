@@ -57,6 +57,11 @@ export const TUNING = {
   SPREAD_TARGET: 3,        // avg buildings/block before infill beats expansion
   EXPAND_PROB: 0.5,        // balanced: ~50/50 new frontier block vs. infill existing community
   INFILL_EXPAND_PROB: 0.12,// once a block is dense, opening a new one is rare
+  // WIP cap (see lotForSession): once this many never-completed sites are open in
+  // a district, a session is steered to ADOPT an abandoned site instead of
+  // starting another — probabilistic, not absolute, so the city can still spread.
+  WIP_CAP: 6,              // open new-build sites before the backlog brake kicks in
+  WIP_ADOPT_PROB: 0.85,    // chance a session past the cap finishes an open site first
 };
 
 // Infill bias toward the denser core so suburbs stay sparse; center-out parcel
@@ -75,7 +80,7 @@ const PARCEL_W = [1, 2, 1, 2, 4, 2, 1, 2, 1];
 // Southern-California look: a dense core, separate valley towns, open land and
 // farmland between them). MIRROR of public/citymodel.js — change both together.
 const SATELLITE_PROB = 0.10;     // chance an expansion founds a NEW detached town (lower: grow the towns we have, don't keep spawning lone parcels)
-const SATELLITE_GAP = 2;         // empty blocks between a new town and the core's edge
+const SATELLITE_GAP = 2;         // empty blocks between a new town and the existing town it nucleates beside
 const SATELLITE_MIN_BLOCKS = 4;  // the core needs a footing before it spins off towns
 const TOWN_PULL = 1.3;           // pull toward a town's OWN centre -> compact communities
 const SUBURB_TARGET = 6;         // blocks a satellite should reach to read as a REAL town (not a lone parcel)
@@ -153,26 +158,47 @@ function frontierOf(town, usedPos, isFree) {
 }
 
 /**
- * Found a NEW detached town: step out along a seeded compass corridor to a block
- * a real GAP beyond the core's edge, requiring a clear 3x3 around it so it lands
- * as a SEPARATE settlement. Returns a slot, or -1 when no corridor has room (the
- * satellite ring is full -> the caller grows an existing town instead).
+ * Found a NEW detached town that NUCLEATES NEXT TO an existing town: step out a
+ * real GAP beyond some built cell's edge to a block with a clear 3x3 around it,
+ * so it lands as a SEPARATE settlement but in the SAME neighbourhood as a town we
+ * already have. Candidates are weighted by how much built-up land already sits
+ * nearby, so new squares CLUSTER against existing towns (growing neighbourhoods)
+ * instead of plopping into open country radiating from the core. Returns a slot,
+ * or -1 when nothing has room (the caller grows an existing town instead).
+ * MIRROR of public/citymodel.js foundSatellite().
  */
-function foundSatellite(usedPos, coreRing, seed, isFree) {
+function foundSatellite(usedPos, towns, seed, isFree) {
   const DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
-  const dist = coreRing + SATELLITE_GAP + (seed % 3);
-  for (let a = 0; a < DIRS.length; a++) {
-    const di = (((seed >>> 5) % DIRS.length) + a) % DIRS.length;
-    const bx = DIRS[di][0] * dist, by = DIRS[di][1] * dist;
-    let blocked = false;
-    for (let ex = -1; ex <= 1 && !blocked; ex++) for (let ey = -1; ey <= 1; ey++) {
-      if (usedPos.has((bx + ex) + ',' + (by + ey))) blocked = true;
+  const STEP = SATELLITE_GAP + 1;       // land one cell past the empty gap
+  const DENSITY_R = SATELLITE_GAP + 2;  // radius over which "nearby built land" is counted
+  const cand = new Map();               // "bx,by" -> {bx,by,slot}
+  for (const t of towns) {
+    for (const c of t.cells) {
+      for (const d of DIRS) {
+        const bx = c.bx + d[0] * STEP, by = c.by + d[1] * STEP, k = bx + ',' + by;
+        if (cand.has(k)) continue;
+        let blocked = false;            // require a clear 3x3 -> a real, separate square
+        for (let ex = -1; ex <= 1 && !blocked; ex++) for (let ey = -1; ey <= 1; ey++) {
+          if (usedPos.has((bx + ex) + ',' + (by + ey))) blocked = true;
+        }
+        if (blocked) continue;
+        const slot = slotForPos(bx, by);
+        if (isFree(slot)) cand.set(k, { bx, by, slot });
+      }
     }
-    if (blocked) continue;
-    const slot = slotForPos(bx, by);
-    if (isFree(slot)) return slot;
   }
-  return -1;
+  if (!cand.size) return -1;
+  // CLUSTERING BIAS: prefer a spot hugged by lots of existing built land.
+  const list = [...cand.values()];
+  const pick = weightedPick(list, (c) => {
+    let near = 0;
+    for (let dx = -DENSITY_R; dx <= DENSITY_R; dx++) for (let dy = -DENSITY_R; dy <= DENSITY_R; dy++) {
+      if (usedPos.has((c.bx + dx) + ',' + (c.by + dy))) near++;
+    }
+    const jit = 0.4 + ((hash32('sat:' + c.bx + ',' + c.by + ':' + seed) % 1000) / 1000) * 0.6;
+    return (1 + near * near) * jit;     // near^2 -> strong pull toward established neighbourhoods
+  }, seed >>> 5);
+  return pick.slot;
 }
 
 /**
@@ -193,11 +219,9 @@ function pickExpansionSlot(usedSlots, seed, isFree) {
   let core = null;
   for (const t of towns) if (t.cells.some((c) => c.bx === 0 && c.by === 0)) { core = t; break; }
   if (!core) for (const t of towns) if (!core || t.size > core.size) core = t;
-  let coreRing = 0;
-  if (core) for (const c of core.cells) coreRing = Math.max(coreRing, Math.abs(c.bx), Math.abs(c.by));
 
   if (usedSlots.length >= SATELLITE_MIN_BLOCKS && (seed % 1000) / 1000 < SATELLITE_PROB) {
-    const slot = foundSatellite(usedPos, coreRing, seed, isFree);
+    const slot = foundSatellite(usedPos, towns, seed, isFree);
     if (slot >= 0) return slot;
   }
 
@@ -309,6 +333,14 @@ export function neighborhoodFor(blockSlot) {
 // public/config.js — change both together or seeds/renders disagree.
 export const BUILDING_TYPES = {
   house:         { category: 'res',     floors: [1, 2],   foot: [[1, 1]] },
+  // ── extra residential archetypes (all category 'res', so they flow through
+  //    the normal occupancy/render path). mansion is OFF the density chain —
+  //    an estate lot starts and tops out as a mansion, growing only within its
+  //    own floor band (like the civic types) — while townhouse/condo are chain
+  //    steps (see DENSITY_CHAIN) that a residential/commercial lot climbs. ──
+  mansion:       { category: 'res',     floors: [2, 3],   foot: [[2, 2]] },  // estate: big lot, gabled wings
+  townhouse:     { category: 'res',     floors: [2, 3],   foot: [[1, 2]] },  // row home: narrow, shared walls
+  condo:         { category: 'res',     floors: [5, 9],   foot: [[1, 2], [2, 2]] },  // mid-rise residential
   apartment:     { category: 'res',     floors: [3, 6],   foot: [[1, 1], [1, 2]] },
   office:        { category: 'com',     floors: [7, 14],   foot: [[1, 2]] },
   skyscraper:    { category: 'com',     floors: [20, 110], foot: [[2, 2]] },
@@ -340,9 +372,9 @@ export const BUILDING_TYPES = {
 
 // Weighted pools by maturity band; first band whose `until` exceeds n wins.
 export const TYPE_WEIGHTS = [
-  { until: 4,        w: { house: 5, park: 3, apartment: 2, shop: 1, landfill: 1, school: 1 } },
-  { until: 10,       w: { apartment: 4, office: 3, shop: 2, restaurant: 1, store: 1, school: 2, transit: 2, house: 2, park: 2, power_station: 1, factory: 1, police: 1, fire_station: 1, hospital: 1 } },
-  { until: Infinity, w: { office: 4, skyscraper: 3, store: 2, restaurant: 1, power_station: 2, factory: 2, transit: 2, school: 1, park: 1, police: 1, fire_station: 1, hospital: 1, prison: 1 } },
+  { until: 4,        w: { house: 5, mansion: 1, townhouse: 2, park: 3, apartment: 2, shop: 1, landfill: 1, school: 1 } },
+  { until: 10,       w: { apartment: 4, townhouse: 2, condo: 2, office: 3, shop: 2, restaurant: 1, store: 1, school: 2, transit: 2, house: 2, mansion: 1, park: 2, power_station: 1, factory: 1, police: 1, fire_station: 1, hospital: 1 } },
+  { until: Infinity, w: { office: 4, skyscraper: 3, condo: 2, store: 2, restaurant: 1, power_station: 2, factory: 2, transit: 2, school: 1, park: 1, police: 1, fire_station: 1, hospital: 1, prison: 1 } },
 ];
 
 export function pickType(seed, n) {
@@ -381,10 +413,14 @@ export function footprintForType(type, seed) {
 // and only a small downtown can ever reach skyscrapers. A building redevelops up
 // the density chain (house -> apartment -> office -> skyscraper) only as far as
 // its zone allows, then tops out (and sessions move on to other growable lots).
-export const DENSITY_CHAIN = ['house', 'apartment', 'office', 'skyscraper'];
+// A residential lot redevelops house -> townhouse -> apartment -> condo before
+// it could ever turn commercial; the zone cap (below) decides how far it climbs.
+// `mansion` is intentionally NOT on the chain — densityRank() returns -1 for it,
+// so an estate lot grows only within its own floor band and never redevelops.
+export const DENSITY_CHAIN = ['house', 'townhouse', 'apartment', 'condo', 'office', 'skyscraper'];
 export const ZONES = [
-  { zone: 'residential', weight: 6, cap: 'apartment' },  // low-rise homes / flats
-  { zone: 'commercial',  weight: 3, cap: 'office' },      // mid-rise commercial
+  { zone: 'residential', weight: 6, cap: 'apartment' },  // low-rise homes / flats (climbs to apartment)
+  { zone: 'commercial',  weight: 3, cap: 'office' },      // mid-rise commercial (climbs through condo to office)
   { zone: 'downtown',    weight: 1, cap: 'skyscraper' },  // rare high-rise core
 ];
 const ZONE_CAP = Object.fromEntries(ZONES.map((z) => [z.zone, z.cap]));
@@ -413,13 +449,18 @@ function maxFloorsForType(type) { return (BUILDING_TYPES[type] || BUILDING_TYPES
 // dominated by houses with a sprinkle of local retail (corner store, cafe) and
 // parks so they read as planned residential COMMUNITIES; downtown/inner carry
 // the bigger stores and offices; the rural ring is farmland + homesteads.
+// Residential mix per class: mansions belong to the estate belt (upper, with a
+// sprinkle in middle/rural), townhouse rows densest in inner/working, and condos
+// fill the mid-rise gap downtown/inner. A condo seeded into a residential-zoned
+// lot is clamped back to apartment by breakGround's density cap, so condos only
+// stand on the commercial/downtown lots those hoods also carry.
 const HOOD_TYPE_WEIGHTS = {
-  downtown: { skyscraper: 8, office: 5, apartment: 2, store: 2, restaurant: 1, transit: 1, hospital: 1 }, // CBD: skyscraper-led high-rise
-  inner:    { apartment: 5, office: 2, house: 2, shop: 2, restaurant: 1, store: 1, transit: 1, police: 1, prison: 1, fire_station: 1, factory: 1 },
-  upper:    { house: 8, apartment: 2, park: 2, shop: 1, restaurant: 1, school: 1, hospital: 1, fire_station: 1 },
-  middle:   { house: 7, apartment: 2, shop: 2, restaurant: 1, store: 1, school: 2, park: 1, police: 1, fire_station: 1, hospital: 1 },
-  working:  { house: 7, apartment: 2, shop: 1, store: 1, transit: 1, park: 1, police: 1, fire_station: 1, prison: 1, factory: 2 },
-  rural:    { house: 5, farm: 6, park: 1, shop: 1, school: 1 }, // homesteads scattered among fields
+  downtown: { skyscraper: 8, office: 5, condo: 3, apartment: 2, store: 2, restaurant: 1, transit: 1, hospital: 1 }, // CBD: skyscraper-led high-rise + luxury condos
+  inner:    { apartment: 5, townhouse: 3, condo: 2, office: 2, house: 1, shop: 2, restaurant: 1, store: 1, transit: 1, police: 1, prison: 1, fire_station: 1, factory: 1 },
+  upper:    { house: 4, mansion: 4, townhouse: 1, apartment: 1, park: 2, shop: 1, restaurant: 1, school: 1, hospital: 1, fire_station: 1 }, // estate belt
+  middle:   { house: 6, townhouse: 2, mansion: 1, apartment: 2, shop: 2, restaurant: 1, store: 1, school: 2, park: 1, police: 1, fire_station: 1, hospital: 1 },
+  working:  { house: 6, townhouse: 3, apartment: 2, shop: 1, store: 1, transit: 1, park: 1, police: 1, fire_station: 1, prison: 1, factory: 2 },
+  rural:    { house: 5, mansion: 1, farm: 6, park: 1, shop: 1, school: 1 }, // homesteads + a rare country estate
 };
 function pickTypeForHood(seed, hood) {
   const w = HOOD_TYPE_WEIGHTS[hood.klass] || HOOD_TYPE_WEIGHTS.middle;
@@ -673,18 +714,31 @@ export class CityModel extends EventEmitter {
     if (existing && district.lots[existing.index] === existing) return existing;
 
     let lot = null;
-    if ((hash32(key) & 1) === 1) {
-      // Renovate half: 70/30 split favouring abandoned half-built sites over
-      // renovating a standing building (whichever is empty falls back to the
-      // other).
-      const preferResume = (hash32(`${key}:mix`) % 10) < 7;
+    // Backlog brake: when too many never-completed sites are already open, steer
+    // this session onto an abandoned one (85% of the time) ahead of breaking new
+    // ground OR renovating a finished building — clears scaffolding before adding
+    // more. Probabilistic so the city can still occasionally spread under load.
+    const backlog = district.lots.filter(
+      (l) => l.state !== 'complete' && !l.everCompleted
+    ).length;
+    if (backlog >= TUNING.WIP_CAP && (hash32(`${key}:wip`) % 100) < TUNING.WIP_ADOPT_PROB * 100) {
+      lot = this.pickResumable(district, key);
+    }
+    if (!lot && (hash32(key) & 1) === 1) {
+      // Renovate half: favour finishing abandoned half-built sites over renovating
+      // a standing building (whichever is empty falls back to the other). The lean
+      // is 70/30 normally, but eases to 50/50 once the backlog is over the cap —
+      // past that point the WIP brake above is already steering crews onto open
+      // sites, so the renovate half doesn't pile on and finished-building upgrades
+      // get an even share.
+      const resumeBias = backlog >= TUNING.WIP_CAP ? 5 : 7;
+      const preferResume = (hash32(`${key}:mix`) % 10) < resumeBias;
       lot = preferResume
         ? this.pickResumable(district, key) || this.pickUpgradeable(district, key)
         : this.pickUpgradeable(district, key) || this.pickResumable(district, key);
     }
-    // Either half: before opening fresh ground, adopt any abandoned half-built
-    // site so it gets finished rather than left standing as scaffolding forever.
-    if (!lot) lot = this.pickResumable(district, key);
+    // Adoption of abandoned sites is handled by the renovate half and the WIP
+    // brake above; the new-ground half goes straight to fresh ground.
     if (!lot) lot = this.breakGround(district);
     lot.sessionId = key;
     this.sessionLot.set(key, lot);

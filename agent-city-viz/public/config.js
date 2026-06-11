@@ -92,6 +92,11 @@
   // parcels, see render.js.)
   const BUILDING_TYPES = {
     house:         { category: 'res',     floors: [1, 2],   foot: [[1, 1]] },
+    // extra residential archetypes (all 'res'); mansion is off the density chain
+    // (estate that tops out), townhouse/condo are chain steps. Mirror of server.
+    mansion:       { category: 'res',     floors: [2, 3],   foot: [[2, 2]] },           // estate
+    townhouse:     { category: 'res',     floors: [2, 3],   foot: [[1, 2]] },           // row home
+    condo:         { category: 'res',     floors: [5, 9],   foot: [[1, 2], [2, 2]] },   // mid-rise residential
     apartment:     { category: 'res',     floors: [3, 6],   foot: [[1, 1], [1, 2]] },
     office:        { category: 'com',     floors: [7, 14],   foot: [[1, 2]] },
     skyscraper:    { category: 'com',     floors: [20, 110], foot: [[2, 2]] },
@@ -116,9 +121,9 @@
     landfill:      { category: 'landfill', floors: [0, 0],  foot: [[2, 2]] },
   };
   const TYPE_WEIGHTS = [
-    { until: 4,        w: { house: 5, park: 3, apartment: 2, shop: 1, landfill: 1, school: 1 } },
-    { until: 10,       w: { apartment: 4, office: 3, shop: 2, restaurant: 1, store: 1, school: 2, transit: 2, house: 2, park: 2, power_station: 1, factory: 1, police: 1, fire_station: 1, hospital: 1 } },
-    { until: Infinity, w: { office: 4, skyscraper: 3, store: 2, restaurant: 1, power_station: 2, factory: 2, transit: 2, school: 1, park: 1, police: 1, fire_station: 1, hospital: 1, prison: 1 } },
+    { until: 4,        w: { house: 5, mansion: 1, townhouse: 2, park: 3, apartment: 2, shop: 1, landfill: 1, school: 1 } },
+    { until: 10,       w: { apartment: 4, townhouse: 2, condo: 2, office: 3, shop: 2, restaurant: 1, store: 1, school: 2, transit: 2, house: 2, mansion: 1, park: 2, power_station: 1, factory: 1, police: 1, fire_station: 1, hospital: 1 } },
+    { until: Infinity, w: { office: 4, skyscraper: 3, condo: 2, store: 2, restaurant: 1, power_station: 2, factory: 2, transit: 2, school: 1, park: 1, police: 1, fire_station: 1, hospital: 1, prison: 1 } },
   ];
   function pickType(seed, n) {
     const pool = TYPE_WEIGHTS.find((b) => n < b.until) || TYPE_WEIGHTS[TYPE_WEIGHTS.length - 1];

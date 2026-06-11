@@ -108,7 +108,7 @@
   // its OWN edge toward its OWN centre so the gaps between towns persist (the
   // Southern-California look). MIRROR of server/city.js — change both together.
   const SATELLITE_PROB = 0.10;      // chance an expansion founds a NEW detached town (lower: grow the towns we have, don't keep spawning lone parcels)
-  const SATELLITE_GAP = 2;          // empty blocks between a new town and the core's edge
+  const SATELLITE_GAP = 2;          // empty blocks between a new town and the existing town it nucleates beside
   const SATELLITE_MIN_BLOCKS = 4;   // the core needs a footing before it spins off towns
   const TOWN_PULL = 1.3;            // pull toward a town's OWN centre -> compact communities
   const SUBURB_TARGET = 6;          // blocks a satellite should reach to read as a REAL town (not a lone parcel)
@@ -196,26 +196,44 @@
   }
 
   /**
-   * Found a NEW detached town along a seeded compass corridor, a real GAP past
-   * the core's edge with a clear 3x3 around it. -1 if no corridor has room.
-   * MIRROR of server/city.js foundSatellite().
+   * Found a NEW detached town that NUCLEATES NEXT TO an existing town: a block a
+   * real GAP past some built cell's edge, clear 3x3 around it, weighted toward
+   * spots already hugged by built-up land so new squares CLUSTER against existing
+   * towns (growing neighbourhoods) rather than plopping into open country. -1 if
+   * nothing has room. MIRROR of server/city.js foundSatellite().
    */
-  function foundSatellite(usedPos, coreRing, seed, isFree) {
+  function foundSatellite(usedPos, towns, seed, isFree) {
     const C = window.CITY;
     const DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
-    const dist = coreRing + SATELLITE_GAP + (seed % 3);
-    for (let a = 0; a < DIRS.length; a++) {
-      const di = (((seed >>> 5) % DIRS.length) + a) % DIRS.length;
-      const bx = DIRS[di][0] * dist, by = DIRS[di][1] * dist;
-      let blocked = false;
-      for (let ex = -1; ex <= 1 && !blocked; ex++) for (let ey = -1; ey <= 1; ey++) {
-        if (usedPos.has((bx + ex) + ',' + (by + ey))) blocked = true;
+    const STEP = SATELLITE_GAP + 1;
+    const DENSITY_R = SATELLITE_GAP + 2;
+    const cand = new Map();
+    for (const t of towns) {
+      for (const c of t.cells) {
+        for (const d of DIRS) {
+          const bx = c.bx + d[0] * STEP, by = c.by + d[1] * STEP, k = bx + ',' + by;
+          if (cand.has(k)) continue;
+          let blocked = false;
+          for (let ex = -1; ex <= 1 && !blocked; ex++) for (let ey = -1; ey <= 1; ey++) {
+            if (usedPos.has((bx + ex) + ',' + (by + ey))) blocked = true;
+          }
+          if (blocked) continue;
+          const slot = C.slotForPos(bx, by);
+          if (isFree(slot)) cand.set(k, { bx, by, slot });
+        }
       }
-      if (blocked) continue;
-      const slot = C.slotForPos(bx, by);
-      if (isFree(slot)) return slot;
     }
-    return -1;
+    if (!cand.size) return -1;
+    const list = [...cand.values()];
+    const pick = weightedPick(list, (c) => {
+      let near = 0;
+      for (let dx = -DENSITY_R; dx <= DENSITY_R; dx++) for (let dy = -DENSITY_R; dy <= DENSITY_R; dy++) {
+        if (usedPos.has((c.bx + dx) + ',' + (c.by + dy))) near++;
+      }
+      const jit = 0.4 + ((C.hash32('sat:' + c.bx + ',' + c.by + ':' + seed) % 1000) / 1000) * 0.6;
+      return (1 + near * near) * jit;
+    }, seed >>> 5);
+    return pick.slot;
   }
 
   /**
@@ -234,11 +252,9 @@
     let core = null;
     for (const t of towns) if (t.cells.some((c) => c.bx === 0 && c.by === 0)) { core = t; break; }
     if (!core) for (const t of towns) if (!core || t.size > core.size) core = t;
-    let coreRing = 0;
-    if (core) for (const c of core.cells) coreRing = Math.max(coreRing, Math.abs(c.bx), Math.abs(c.by));
 
     if (usedSlots.length >= SATELLITE_MIN_BLOCKS && (seed % 1000) / 1000 < SATELLITE_PROB) {
-      const slot = foundSatellite(usedPos, coreRing, seed, isFree);
+      const slot = foundSatellite(usedPos, towns, seed, isFree);
       if (slot >= 0) return slot;
     }
 

@@ -14,7 +14,8 @@
 
   // Human-readable names for the server's building `type` ids.
   const TYPE_LABEL = {
-    house: 'House', apartment: 'Apartment Block', office: 'Office Building',
+    house: 'House', mansion: 'Mansion', townhouse: 'Townhouse', condo: 'Condominium',
+    apartment: 'Apartment Block', office: 'Office Building',
     skyscraper: 'Skyscraper', shop: 'Corner Store', store: 'Supermarket',
     restaurant: 'Restaurant', school: 'School', factory: 'Factory',
     power_station: 'Power Station', transit: 'Transit Hub', police: 'Police Station',

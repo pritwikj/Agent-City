@@ -142,7 +142,7 @@
     // SUBDIVISION COHESION: every house on a block shares one palette so a
     // suburban/rural block reads as a planned community of like homes rather
     // than a row of mismatched buildings (render-only; does not touch seeds).
-    if (type === 'house' && typeof lot.block === 'number') {
+    if ((type === 'house' || type === 'townhouse') && typeof lot.block === 'number') {
       const blockHue = (CAT_STYLE.res.hue + (C.hash32('subdiv:' + lot.block) % 34) - 17 + 360) % 360;
       hue = (blockHue + ((seed >>> 12) % 7) - 3 + 360) % 360; // tight per-home wobble
     }
@@ -315,6 +315,94 @@
     ctx.beginPath(); ctx.moveTo(wT.x, wT.y); ctx.lineTo(apex.x, apex.y); ctx.lineTo(eT.x, eT.y); ctx.stroke();
     // chimney poking from the front-left slope
     drawBox(ctx, tx + w * 0.2, ty + d * 0.62, w * 0.16, d * 0.16, h, C.FLOOR_H * 1.1, { h: st.hue, s: 14, l: 44 });
+  }
+
+  // Mansion: a grand four-sided hip roof, twin chimneys and a columned front
+  // portico — the estate silhouette that reads as wealth next to the row homes.
+  function drawMansionRoof(ctx, pl, h, st) {
+    const { tx, ty, w, d } = pl;
+    const rh = C.FLOOR_H * 1.15;
+    const apex = w2s(tx + w / 2, ty + d / 2, h + rh);
+    const nT = w2s(tx, ty, h), eT = w2s(tx + w, ty, h);
+    const sT = w2s(tx + w, ty + d, h), wT = w2s(tx, ty + d, h);
+    const rhue = (st.hue + 14) % 360;
+    // back slopes first (occluded), then the two visible front slopes over them
+    poly(ctx, [wT, nT, apex]); ctx.fillStyle = hsl(rhue, 45, 37); ctx.fill();
+    poly(ctx, [nT, eT, apex]); ctx.fillStyle = hsl(rhue, 44, 39); ctx.fill();
+    poly(ctx, [wT, sT, apex]); ctx.fillStyle = hsl(rhue, 46, 43); ctx.fill();  // SW lit
+    poly(ctx, [sT, eT, apex]); ctx.fillStyle = hsl(rhue, 48, 33); ctx.fill();  // SE shade
+    ctx.strokeStyle = 'rgba(255,255,255,0.16)'; ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    ctx.moveTo(wT.x, wT.y); ctx.lineTo(apex.x, apex.y); ctx.lineTo(eT.x, eT.y);
+    ctx.moveTo(sT.x, sT.y); ctx.lineTo(apex.x, apex.y);
+    ctx.stroke();
+    // twin chimneys on opposite quarters
+    drawBox(ctx, tx + w * 0.18, ty + d * 0.66, w * 0.12, d * 0.12, h, C.FLOOR_H * 1.0, { h: st.hue, s: 14, l: 44 });
+    drawBox(ctx, tx + w * 0.70, ty + d * 0.20, w * 0.12, d * 0.12, h, C.FLOOR_H * 0.9, { h: st.hue, s: 14, l: 40 });
+    // columned portico over the front entrance (south edge, centre)
+    const cx0 = tx + w * 0.30, cx1 = tx + w * 0.70, fy = ty + d + 0.16, ph = C.FLOOR_H * 1.5;
+    drawBox(ctx, cx0 - 0.04, ty + d * 0.84, (cx1 - cx0) + 0.08, (fy - (ty + d * 0.84)) + 0.04, ph, 3, { h: 38, s: 10, l: 80 });
+    ctx.strokeStyle = 'rgba(245,244,238,0.94)'; ctx.lineWidth = 2.4;
+    for (let i = 0; i <= 3; i++) {
+      const px = cx0 + (cx1 - cx0) * (i / 3);
+      const a = w2s(px, fy, 0), b = w2s(px, fy, ph);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    // pediment triangle above the porch roof
+    const lA = w2s(cx0 - 0.04, fy, ph + 3), rA = w2s(cx1 + 0.04, fy, ph + 3);
+    const pk = w2s((cx0 + cx1) / 2, fy, ph + 3 + C.FLOOR_H * 0.7);
+    poly(ctx, [lA, rA, pk]); ctx.fillStyle = hsl(38, 12, 78); ctx.fill();
+    ctx.strokeStyle = 'rgba(120,110,90,0.5)'; ctx.lineWidth = 0.8; ctx.stroke();
+  }
+
+  // Townhouse: a flat parapet dressed with an overhanging cornice, vertical
+  // pilasters that split the front into repeated bays, and a street stoop — the
+  // brownstone-row read at iso scale.
+  function drawTownhouseTrim(ctx, pl, h, st) {
+    const { tx, ty, w, d } = pl;
+    // overhanging cornice band just below the roofline (sticks out on all sides)
+    drawBox(ctx, tx - 0.05, ty - 0.05, w + 0.10, d + 0.10, h - C.FLOOR_H * 0.16,
+      C.FLOOR_H * 0.16, { h: st.hue, s: 10, l: C.clamp(st.col.l + 14, 0, 82) });
+    // pilasters dividing the front (SW) face into bays
+    ctx.strokeStyle = 'rgba(30,36,46,0.16)'; ctx.lineWidth = 1.1;
+    for (let k = 0; k <= w; k++) {
+      const a = w2s(tx + k, ty + d, 0), b = w2s(tx + k, ty + d, h - C.FLOOR_H * 0.16);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    // front stoop: two stacked steps at the entrance (south edge, centre)
+    const sx = tx + w * 0.5;
+    drawBox(ctx, sx - 0.18, ty + d, 0.36, 0.22, 0, C.FLOOR_H * 0.5, { h: st.hue, s: 8, l: 70 });
+    drawBox(ctx, sx - 0.12, ty + d + 0.07, 0.24, 0.15, 0, C.FLOOR_H * 0.28, { h: st.hue, s: 8, l: 76 });
+  }
+
+  // Condo: per-floor balcony slabs + railings on the two visible faces and a
+  // setback rooftop penthouse — the mid-rise residential read between flats and
+  // office towers. Balconies draw over the body windows; crown sits on the cap.
+  function drawCondoBalconies(ctx, pl, floors, st) {
+    const { tx, ty, w, d } = pl;
+    for (const side of ['left', 'right']) {
+      const tiles = side === 'left' ? w : d;
+      const slab = side === 'left' ? 'rgba(238,240,242,0.62)' : 'rgba(208,212,216,0.5)';
+      for (let f = 1; f < floors; f++) {
+        const z = f * C.FLOOR_H;
+        const a = edgePt(side, tx, ty, w, d, 0, z), b = edgePt(side, tx, ty, w, d, tiles, z);
+        ctx.strokeStyle = slab; ctx.lineWidth = 2.2;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        const ra = edgePt(side, tx, ty, w, d, 0, z + C.FLOOR_H * 0.34);
+        const rb = edgePt(side, tx, ty, w, d, tiles, z + C.FLOOR_H * 0.34);
+        ctx.strokeStyle = 'rgba(118,128,138,0.42)'; ctx.lineWidth = 0.8;
+        ctx.beginPath(); ctx.moveTo(ra.x, ra.y); ctx.lineTo(rb.x, rb.y); ctx.stroke();
+      }
+    }
+  }
+  function drawCondoCrown(ctx, pl, h, st) {
+    const { tx, ty, w, d } = pl;
+    const ins = 0.28;
+    drawBox(ctx, tx + ins, ty + ins, w - 2 * ins, d - 2 * ins, h, C.FLOOR_H * 1.1,
+      { h: st.col.h, s: st.col.s, l: C.clamp(st.col.l + 4, 0, 90) });
+    // small rooftop mechanical box on the penthouse
+    drawBox(ctx, tx + w * 0.4, ty + d * 0.4, w * 0.2, d * 0.2, h + C.FLOOR_H * 1.1,
+      C.FLOOR_H * 0.5, { h: st.hue, s: 6, l: 56 });
   }
 
   // Skyscraper: a glassy setback crown + an antenna mast with a beacon.
@@ -986,6 +1074,15 @@
       drawWindows(ctx, pl.tx, pl.ty, pl.w, pl.d, 0, floors, st);
       if (type === 'house') {
         drawHouseRoof(ctx, pl, h, st); // pitched roof instead of a flat parapet
+      } else if (type === 'mansion') {
+        drawMansionRoof(ctx, pl, h, st); // grand hip roof + portico
+      } else if (type === 'townhouse') {
+        drawRoofCap(ctx, pl.tx, pl.ty, pl.w, pl.d, h, st);
+        drawTownhouseTrim(ctx, pl, h, st); // cornice + bays + stoop
+      } else if (type === 'condo') {
+        drawCondoBalconies(ctx, pl, floors, st); // per-floor balconies over the body
+        drawRoofCap(ctx, pl.tx, pl.ty, pl.w, pl.d, h, st);
+        drawCondoCrown(ctx, pl, h, st);    // setback penthouse
       } else {
         drawRoofCap(ctx, pl.tx, pl.ty, pl.w, pl.d, h, st);
         drawRoof(ctx, pl.tx, pl.ty, pl.w, pl.d, h, st, tier);
@@ -1075,7 +1172,9 @@
     else if (cat === 'police') topH += 20;                                   // beacon mast
     else if (cat === 'retail') topH += C.FLOOR_H * 0.8 + 14;                  // rooftop sign pylon
     else if (cat === 'farm') topH = Math.max(topH, C.FLOOR_H * 2.4) + 16;     // silo + homestead roof
-    else topH += 24;                                                         // generic roof furniture
+    else if (b.type === 'condo') topH += C.FLOOR_H * 1.8 + 12;                // setback penthouse + mech box
+    else if (b.type === 'mansion') topH += C.FLOOR_H * 1.4 + 14;              // hip roof + chimneys
+    else topH += 24;                                                         // generic roof furniture (house/townhouse/apartment)
     const maxH = topH + 24;
     const wpx = (C.TILE_W * 2 + 8) * zb;
     const hpx = (C.TILE_H * 2 + maxH + 8) * zb;
