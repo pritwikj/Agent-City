@@ -281,6 +281,53 @@ html, body {
   transition: width 0.4s ease;
 }
 
+/* ---- "Currently being worked on" indicator -------------------------------- */
+/* BUILDING badge — hidden unless a live crew is on the site. */
+.proj-live {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  color: #2e9e5b;
+}
+.proj-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #34c46b;
+  box-shadow: 0 0 0 0 rgba(52, 196, 107, 0.6);
+  animation: proj-pulse 1.4s ease-out infinite;
+}
+.proj-card.is-active {
+  border-left-color: #2e9e5b;          /* swap orange accent for live-green */
+  background: rgba(238, 252, 244, 0.85);
+  box-shadow: 0 0 0 1px rgba(52, 196, 107, 0.3), 0 2px 10px rgba(40, 120, 70, 0.14);
+}
+.proj-card.is-active .proj-live { display: inline-flex; }
+/* animated barber-pole stripes over the fill while a crew is active */
+.proj-card.is-active .proj-fill {
+  background-image:
+    linear-gradient(to right, #f0a52b, #2e9e5b),
+    repeating-linear-gradient(-45deg,
+      rgba(255, 255, 255, 0.35) 0, rgba(255, 255, 255, 0.35) 6px,
+      rgba(255, 255, 255, 0) 6px, rgba(255, 255, 255, 0) 12px);
+  background-size: 100% 100%, 24px 100%;
+  animation: proj-stripes 0.7s linear infinite;
+}
+
+@keyframes proj-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(52, 196, 107, 0.55); }
+  70%  { box-shadow: 0 0 0 5px rgba(52, 196, 107, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(52, 196, 107, 0); }
+}
+@keyframes proj-stripes {
+  0%   { background-position: 0 0, 0 0; }
+  100% { background-position: 0 0, 24px 0; }
+}
+
 /* ---- Zoom-out / full-city button ------------------------------------------ */
 #zoom-out-btn {
   position: absolute;

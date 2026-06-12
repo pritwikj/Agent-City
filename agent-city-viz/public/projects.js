@@ -72,7 +72,8 @@
     el.type = 'button';
     el.className = 'proj-card';
     el.innerHTML =
-      '<div class="proj-row"><span class="proj-name"></span></div>' +
+      '<div class="proj-row"><span class="proj-name"></span>' +
+      '<span class="proj-live"><span class="proj-live-dot"></span>BUILDING</span></div>' +
       '<div class="proj-sub"></div>' +
       '<div class="proj-bar"><div class="proj-fill"></div></div>';
     el.addEventListener('click', () => focusLot(cards.get(lot.id) ? cards.get(lot.id).lot : lot));
@@ -82,11 +83,12 @@
       name: el.querySelector('.proj-name'),
       sub: el.querySelector('.proj-sub'),
       fill: el.querySelector('.proj-fill'),
+      active: undefined,
     };
     return entry;
   }
 
-  function updateCard(entry, lot) {
+  function updateCard(entry, lot, isActive) {
     entry.lot = lot;
     const b = lot.building || {};
     const name = typeLabel(b.type);
@@ -98,6 +100,12 @@
       ? Math.max(0, Math.min(100, Math.round((lot.progress / lot.required) * 100)))
       : 0;
     entry.fill.style.width = pct + '%';
+    // A live crew (Claude session/subagent) bound to this lot means it's being
+    // actively worked right now — flag it so the card pulses + animates.
+    if (entry.active !== isActive) {
+      entry.active = isActive;
+      entry.el.classList.toggle('is-active', isActive);
+    }
   }
 
   // ---- Periodic reconcile ---------------------------------------------------
@@ -108,20 +116,24 @@
         if (lot && lot.state === 'construction') out.push(lot);
       }
     }
-    // most-progressed first so near-finished towers sit at the top
-    out.sort((a, b) => (b.progress || 0) - (a.progress || 0));
     return out;
   }
 
   function refresh() {
     const active = collect();
+    const working = (C.activeBuildLots && C.activeBuildLots()) || new Set();
+    // Sites with a live crew float to the top; then most-progressed first so
+    // near-finished towers sit above fresh ones.
+    active.sort((a, b) =>
+      (working.has(b.id) ? 1 : 0) - (working.has(a.id) ? 1 : 0) ||
+      (b.progress || 0) - (a.progress || 0));
     const seen = new Set();
     for (let i = 0; i < active.length; i++) {
       const lot = active[i];
       seen.add(lot.id);
       let entry = cards.get(lot.id);
       if (!entry) { entry = makeCard(lot); cards.set(lot.id, entry); }
-      updateCard(entry, lot);
+      updateCard(entry, lot, working.has(lot.id));
       // keep DOM order matching the sorted list
       if (listEl.children[i] !== entry.el) listEl.insertBefore(entry.el, listEl.children[i] || null);
     }

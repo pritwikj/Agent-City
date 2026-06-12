@@ -1223,7 +1223,9 @@
   }
 
   // ---- Crane (per-frame, animated; only on active construction lots) ---------------
-  function drawCrane(ctx, lot, now) {
+  // The jib swings only while a crew is on-site (hasCrew); an unmanned site's
+  // crane is parked, frozen at a fixed resting angle.
+  function drawCrane(ctx, lot, now, hasCrew) {
     const stage = stageOf(lot);
     if (stage.key === 'dig' || stage.key === 'done') return;
     const pl = C.lotPlacement(lot);
@@ -1240,8 +1242,8 @@
     for (let z = base.y; z > top.y; z -= 9) {
       ctx.beginPath(); ctx.moveTo(base.x - 1.6, z); ctx.lineTo(base.x + 1.6, z - 4.5); ctx.stroke();
     }
-    // slowly swinging jib
-    const ang = Math.sin(now / 4000 + (lot.building.seed % 7)) * 0.9;
+    // slowly swinging jib while staffed; parked at a fixed angle when idle
+    const ang = (hasCrew ? Math.sin(now / 4000 + (lot.building.seed % 7)) : 0.4) * 0.9;
     const jibLen = C.TILE_W * 1.1;
     const jx = top.x + Math.cos(ang) * jibLen;
     const jy = top.y + Math.sin(ang) * jibLen * 0.3;
@@ -1385,7 +1387,7 @@
     ctx.fillRect(p.x - 3, headY - 1, 6, 1);
   }
 
-  function diggerAt(ctx, tx, ty, now) {              // excavator (dig/foundation)
+  function diggerAt(ctx, tx, ty, now, hasCrew) {     // excavator (dig/foundation)
     const b = w2s(tx, ty, 0);
     ctx.fillStyle = '#3a4046';                        // tracks
     ctx.fillRect(b.x - 7, b.y - 3.5, 14, 4);
@@ -1395,7 +1397,7 @@
     ctx.fillRect(b.x - 5, b.y - 11, 9, 8);
     ctx.fillStyle = '#2b6c8f';                        // cab glass
     ctx.fillRect(b.x - 3.5, b.y - 10, 4, 4);
-    const sw = Math.sin(now / 700) * 0.25;            // boom slowly digs
+    const sw = (hasCrew ? Math.sin(now / 700) : 0.6) * 0.25; // boom digs only when staffed; else parked
     const sh = { x: b.x + 3, y: b.y - 9 };
     const elbow = { x: sh.x + 8, y: sh.y + 1 + sw * 6 };
     const bucket = { x: elbow.x + 3, y: elbow.y + 6 };
@@ -1428,7 +1430,7 @@
 
     // Excavator while the pit is open / slab going in.
     if (stage.key === 'dig' || stage.key === 'foundation') {
-      diggerAt(ctx, px + 1.0, py + 1.5, now);
+      diggerAt(ctx, px + 1.0, py + 1.5, now, hasCrew);
     }
 
     // Ambient crew working the site — ONLY when a Claude Code session is

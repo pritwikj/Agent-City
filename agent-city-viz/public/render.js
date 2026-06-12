@@ -392,7 +392,7 @@
             C.drawLot(ctx2, lot, d, camera.zoom);
             if (lot.state === 'construction') {
               C.drawSiteProps(ctx2, lot, now, hasCrew); // hoarding, cones, beacon, materials, digger
-              C.drawCrane(ctx2, lot, now);
+              C.drawCrane(ctx2, lot, now, hasCrew);
             }
           },
         });
