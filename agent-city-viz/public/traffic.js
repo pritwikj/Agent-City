@@ -9,7 +9,9 @@
 
    Buses: a couple of looping routes stitched (via A*) between the city's
    transit-type buildings, dwelling briefly at each station; if the city has no
-   stations yet they simply circle the downtown core.
+   stations yet they simply circle the downtown core. Each station gets a visible
+   roadside shelter (glass back, flat roof, bench, blue sign disc) so the stops
+   read as real places rather than invisible pause points.
 
    Drawn as small oriented iso boxes, depth-sorted into the same frame list as
    buildings and pedestrians. Client-side and ambient — no server involvement.
@@ -66,6 +68,7 @@
   // ---- State ----------------------------------------------------------------
   const cars = new Map();
   const buses = [];
+  let busStops = [];               // visible roadside shelters at each route station
   const signals = new Map();       // 'ix,iy' -> { tx, ty, off } signalized junctions
   let nextId = 1;
   let lastRecalc = -1e9;
@@ -198,6 +201,17 @@
         route, pi: at, tx: route.tiles[at].tx, ty: route.tiles[at].ty,
         dirx: 1, diry: 0, dwellUntil: 0, speed: 2.7,
       });
+    }
+    // A visible shelter beside the road at every station, seated to the right of
+    // travel (same side buses pull in on) so they read as real stops, not magic
+    // pause points.
+    busStops = [];
+    const tiles = route.tiles;
+    for (const idx of route.stations) {
+      const a = tiles[idx], b = tiles[(idx + 1) % tiles.length];
+      let dx = b.tx - a.tx, dy = b.ty - a.ty;
+      const m = Math.hypot(dx, dy) || 1; dx /= m; dy /= m;
+      busStops.push({ tx: a.tx, ty: a.ty, dirx: dx, diry: dy, ox: -dy, oy: dx });
     }
   }
 
@@ -556,6 +570,61 @@
     ctx.restore();
   }
 
+  // A roadside bus shelter: a flat-roofed cantilever on two posts with a glass
+  // back panel, plus a sign pole topped by a blue "bus" disc. Built in the
+  // station's local tile frame (forward = travel, right = curb side) and
+  // projected so it sits level on the pavement like the vehicles.
+  function drawBusStop(ctx, stop) {
+    const cx = stop.tx + 0.5 + stop.ox * 0.62;   // nudge onto the curb, right of travel
+    const cy = stop.ty + 0.5 + stop.oy * 0.62;
+    const base = C.worldToScreen(cx, cy, 0);
+    const f = C.worldToScreen(cx + stop.dirx, cy + stop.diry, 0);
+    let fx = f.x - base.x, fy = f.y - base.y;
+    const fl = Math.hypot(fx, fy) || 1; fx /= fl; fy /= fl;
+    const sc = fl; fx *= sc; fy *= sc;
+    const rx = -fy, ry = fx;
+    const L = 0.62, Wd = 0.26, H = 9, POST = 8.5;
+    const corner = (s, t, z) => ({ x: base.x + fx * s + rx * t, y: base.y + fy * s + ry * t - z });
+
+    ctx.save();
+    // shadow
+    ctx.fillStyle = 'rgba(28,36,46,0.20)';
+    poly(ctx, [corner(-L / 2, -Wd / 2, 0), corner(L / 2, -Wd / 2, 0), corner(L / 2, Wd / 2, 0), corner(-L / 2, Wd / 2, 0)]);
+    ctx.fill();
+    // glass back panel (curb-side long wall)
+    ctx.fillStyle = 'rgba(176,206,224,0.45)';
+    poly(ctx, [corner(-L / 2, Wd / 2, 1), corner(L / 2, Wd / 2, 1), corner(L / 2, Wd / 2, POST), corner(-L / 2, Wd / 2, POST)]);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(70,90,104,0.55)'; ctx.lineWidth = 0.8; ctx.stroke();
+    // posts
+    ctx.strokeStyle = '#3a4047'; ctx.lineWidth = 1.3; ctx.lineCap = 'round';
+    for (const s of [-L / 2 + 0.05, L / 2 - 0.05]) {
+      const a = corner(s, -Wd / 2, 0), b = corner(s, -Wd / 2, POST);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    ctx.lineCap = 'butt';
+    // flat roof slab
+    ctx.fillStyle = '#cfd6db';
+    poly(ctx, [corner(-L / 2, -Wd / 2, POST), corner(L / 2, -Wd / 2, POST), corner(L / 2, Wd / 2, POST), corner(-L / 2, Wd / 2, POST)]);
+    ctx.fill();
+    ctx.fillStyle = '#a9b1b7';                    // roof front edge
+    poly(ctx, [corner(-L / 2, -Wd / 2, POST), corner(L / 2, -Wd / 2, POST), corner(L / 2, -Wd / 2, POST - 1.4), corner(-L / 2, -Wd / 2, POST - 1.4)]);
+    ctx.fill();
+    // bench
+    ctx.fillStyle = '#7d6a52';
+    poly(ctx, [corner(-L * 0.34, Wd * 0.18, 3), corner(L * 0.34, Wd * 0.18, 3), corner(L * 0.34, Wd / 2, 3), corner(-L * 0.34, Wd / 2, 3)]);
+    ctx.fill();
+    // sign pole + blue disc at the near end
+    const pb = corner(L / 2 + 0.04, -Wd / 2, 0), pt = corner(L / 2 + 0.04, -Wd / 2, POST + 5);
+    ctx.strokeStyle = '#4a5158'; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(pb.x, pb.y); ctx.lineTo(pt.x, pt.y); ctx.stroke();
+    ctx.fillStyle = '#2f6fb0';
+    ctx.beginPath(); ctx.arc(pt.x, pt.y, 2.6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#eef3f7';
+    ctx.beginPath(); ctx.arc(pt.x, pt.y, 1.2, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
   function collectDrawables(list, now, camera) {
     const vt = camera ? camera.viewTransform() : null;
     const cw = (canvas && canvas.clientWidth) || 1e5;
@@ -563,6 +632,10 @@
     for (const sig of signals.values()) {
       if (vt && !onScreen(sig, vt, cw, ch)) continue;
       list.push({ depth: C.depthKey(sig.tx, sig.ty), draw: (ctx) => drawSignal(ctx, sig, now) });
+    }
+    for (const stop of busStops) {
+      if (vt && !onScreen(stop, vt, cw, ch)) continue;
+      list.push({ depth: C.depthKey(stop.tx, stop.ty), draw: (ctx) => drawBusStop(ctx, stop) });
     }
     for (const car of cars.values()) {
       if (vt && !onScreen(car, vt, cw, ch)) continue;
@@ -577,6 +650,7 @@
   function reset() {
     cars.clear();
     buses.length = 0;
+    busStops = [];
     signals.clear();
     routesVersion = -1;
     lastRecalc = -1e9;
