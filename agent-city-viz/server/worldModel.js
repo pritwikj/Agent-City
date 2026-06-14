@@ -41,6 +41,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { toolFamily, toolActionLabel } from './toolFamilies.js';
+import { TUNING } from './city.js';
 
 // ── Tunables ────────────────────────────────────────────────────────────────
 const RING_BUFFER_SIZE = 500; // recent entity deltas retained for resync
@@ -111,6 +112,56 @@ function readLastAiTitle(transcriptPath, knownSize) {
 }
 
 /**
+ * Sum assistant `output_tokens` appended to a transcript since a byte offset.
+ * Reads only [fromOffset, size) — never the whole file. Parses complete JSONL
+ * lines; a trailing line with no newline is PARTIAL — excluded, and nextOffset
+ * stops before it so it is re-read whole next time. Cheap on hot streams: the
+ * caller mtime-gates before calling, and we pre-filter lines before JSON.parse.
+ * @param {string} transcriptPath
+ * @param {number} fromOffset byte offset of the last consumed boundary
+ * @param {number} [knownSize] file size from a prior stat, to skip an fstat
+ * @returns {{ tokens: number, nextOffset: number } | null} null on read error
+ */
+function readOutputTokensSince(transcriptPath, fromOffset, knownSize) {
+  let fd;
+  try {
+    fd = fs.openSync(transcriptPath, 'r');
+    const size = typeof knownSize === 'number' ? knownSize : fs.fstatSync(fd).size;
+    if (size <= fromOffset) return { tokens: 0, nextOffset: fromOffset };
+    const len = size - fromOffset;
+    const buf = Buffer.allocUnsafe(len);
+    fs.readSync(fd, buf, 0, len, fromOffset);
+    const text = buf.toString('utf8');
+    // Only whole lines (up to the last newline) are safe to parse; a partial
+    // trailing line is deferred so we don't advance the cursor past it.
+    const lastNl = text.lastIndexOf('\n');
+    if (lastNl === -1) return { tokens: 0, nextOffset: fromOffset };
+    const complete = text.slice(0, lastNl);
+    // Byte length (not string length) — offsets are bytes and JSONL is UTF-8.
+    const nextOffset = fromOffset + Buffer.byteLength(complete, 'utf8') + 1;
+    let tokens = 0;
+    for (const line of complete.split('\n')) {
+      if (!line || line.indexOf('output_tokens') === -1) continue; // cheap pre-filter
+      try {
+        const o = JSON.parse(line);
+        const ot = o && o.type === 'assistant' && o.message && o.message.usage
+          ? o.message.usage.output_tokens : undefined;
+        if (typeof ot === 'number' && Number.isFinite(ot)) tokens += ot;
+      } catch {
+        // ignore partial / malformed lines
+      }
+    }
+    return { tokens, nextOffset };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* noop */ }
+    }
+  }
+}
+
+/**
  * Derive a stable project descriptor from a cwd path.
  * @param {*} cwd
  * @returns {{ key: string, name: string, path: string }}
@@ -141,6 +192,8 @@ export class WorldModel extends EventEmitter {
     this.inFlight = new Map(); // sessionId -> [{ toolName, family, action }]
     /** per-session transcript title cache: sessionId -> { lastCheckMs, mtimeMs, title } */
     this.titleCache = new Map();
+    /** transcript token cursor: key(sessionId|agentId) -> { offset, mtimeMs, seeded } */
+    this.tokenCursor = new Map();
   }
 
   // ── seq + emit helpers ─────────────────────────────────────────────────────
@@ -440,6 +493,47 @@ export class WorldModel extends EventEmitter {
     }
   }
 
+  /**
+   * Output-token work amount for a just-completed tool call. Reads the relevant
+   * transcript incrementally from this session/agent's cursor and converts the
+   * newly-flushed `output_tokens` into construction work units. Always >= 0.
+   *
+   * Tool calls remain the BINDING trigger (they always place the worker); this
+   * only governs how MUCH the building rises. A call before the assistant turn
+   * has flushed legitimately returns 0 (bind only) — those tokens land on the
+   * next tool call. Subagent work reads `agent_transcript_path` (keyed by
+   * agent_id) but is still attributed to the parent session's lot.
+   *
+   * First sighting SEEDS the cursor to EOF and returns 0, so an already-long
+   * transcript isn't dumped as one giant delta.
+   * @returns {number} work units (output_tokens / OUTPUT_TOKENS_PER_WORK)
+   */
+  tokenDeltaFor(rec, event) {
+    const isSub = event.agent_id && event.agent_id !== event.session_id;
+    const tpath = isSub ? event.agent_transcript_path : event.transcript_path;
+    const key = isSub ? event.agent_id : event.session_id;
+    if (typeof tpath !== 'string' || !tpath) return 0;
+
+    let stat;
+    try { stat = fs.statSync(tpath); } catch { return 0; } // not readable yet → retry next tool
+
+    let cur = this.tokenCursor.get(key);
+    if (!cur) {
+      // Seed to EOF: only tokens produced AFTER the server first sees this
+      // session/agent count — never the historical transcript.
+      this.tokenCursor.set(key, { offset: stat.size, mtimeMs: stat.mtimeMs, seeded: true });
+      return 0;
+    }
+    if (stat.mtimeMs === cur.mtimeMs) return 0;        // unchanged → cheap exit, no read
+    if (stat.size < cur.offset) cur.offset = 0;        // truncation/rotation → re-scan from start
+
+    const r = readOutputTokensSince(tpath, cur.offset, stat.size);
+    if (!r) return 0;                                  // read error → leave cursor, retry next tool
+    cur.offset = r.nextOffset;
+    cur.mtimeMs = stat.mtimeMs;
+    return r.tokens / TUNING.OUTPUT_TOKENS_PER_WORK;
+  }
+
   makeSessionRecord(event, now) {
     return {
       id: event.session_id,
@@ -646,13 +740,17 @@ export class WorldModel extends EventEmitter {
       this.pushRecentToolAction(rec, 'done', doneText, seq, now);
     }
 
-    // Feed the persistent city layer: each completed tool is one unit of
-    // construction work (failures become incidents). Consumed in index.js.
+    // Feed the persistent city layer. The tool call BINDS the session to its
+    // lot and places the worker; how MUCH it builds is the model's output_tokens
+    // produced since the last deposit (0 ⇒ bind only). Failures become incidents
+    // and carry no amount. Consumed in index.js.
+    const amount = isFailure ? 0 : this.tokenDeltaFor(rec, event);
     this.emit('work', {
       project: rec.project,
       family: finished?.family ?? null,
       sessionId: rec.id,
       isFailure,
+      amount,
     });
   }
 
@@ -763,11 +861,13 @@ export class WorldModel extends EventEmitter {
     // Despawn the session and all of its subagents.
     this.entities.delete(id);
     this.inFlight.delete(id);
+    this.tokenCursor.delete(id);
     this.emitDespawn(id);
     for (const [otherId, other] of this.entities) {
       if (other.kind === 'subagent' && other.parentSessionId === id) {
         this.entities.delete(otherId);
         this.inFlight.delete(otherId);
+        this.tokenCursor.delete(otherId);
         this.emitDespawn(otherId);
       }
     }

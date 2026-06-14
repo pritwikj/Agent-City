@@ -221,48 +221,107 @@
     const out = [];
     if (!roadTiles.length) return out;
     const roadSet = new Set(roadTiles.map((t) => Math.round(t.tx) + ',' + Math.round(t.ty)));
-    const seen = new Set();
     const step = 0.34;
-    const sample = (p) => {
-      const k = Math.round(p.tx) + ',' + Math.round(p.ty);
-      if (!roadSet.has(k) || seen.has(k)) return;
-      seen.add(k);
-      out.push({ tx: Math.round(p.tx), ty: Math.round(p.ty), dirx: p.dirx, diry: p.diry });
+    // Walk a rail polyline in arc order and group consecutive road-overlap tiles
+    // that are tile-adjacent into ONE crossing run. Where the rail merely curves
+    // through a road's corner it clips several road tiles in a row — collapsing
+    // them into a single deck avoids the staircase of mismatched panels.
+    const runs = [];
+    const walk = (arcLen, posFn) => {
+      let cur = null, last = null;
+      for (let s = 0; s <= arcLen; s += step) {
+        const p = posFn(s);
+        const tx = Math.round(p.tx), ty = Math.round(p.ty), k = tx + ',' + ty;
+        if (!roadSet.has(k)) { cur = null; last = null; continue; }
+        if (!cur || !last || Math.max(Math.abs(tx - last.tx), Math.abs(ty - last.ty)) > 1) {
+          cur = { tiles: [], tk: new Set(), pts: [], dx: 0, dy: 0 }; runs.push(cur);
+        }
+        if (!cur.tk.has(k)) { cur.tk.add(k); cur.tiles.push({ tx, ty }); }
+        cur.pts.push({ tx: p.tx, ty: p.ty });   // real sub-tile centreline, for curved rails
+        cur.dx += p.dirx; cur.dy += p.diry;
+        last = { tx, ty };
+      }
     };
-    const builtArc = rail.loopFrac * rail.total;
-    for (let s = 0; s <= builtArc; s += step) sample(C.infra.posOnLoop(rail, s));
+    walk(rail.loopFrac * rail.total, (s) => C.infra.posOnLoop(rail, s));
     rail.branchGeo.forEach((br, i) => {
       const pf = rail.branches[i].paveFrac; if (pf <= 0) return;
-      const bArc = pf * br.total;
-      for (let s = 0; s <= bArc; s += step) sample(C.infra.posOnPath(br, s));
+      walk(pf * br.total, (s) => C.infra.posOnPath(br, s));
     });
+    // Resolve each run to a centroid + a single rail heading (for the stop lines).
+    for (const r of runs) {
+      const n = r.tiles.length;
+      let sx = 0, sy = 0;
+      for (const t of r.tiles) { sx += t.tx + 0.5; sy += t.ty + 0.5; }
+      const m = Math.hypot(r.dx, r.dy) || 1;
+      out.push({ tiles: r.tiles, pts: r.pts, cx: sx / n, cy: sy / n, ux: r.dx / m, uy: r.dy / m });
+    }
     return out;
   }
 
   // A grade crossing: an asphalt deck repaving the rail across the road, the rails
   // carried over it, and a white stop line on each road approach.
+  // A simple grade crossing: the road just keeps going, the track is paved flush
+  // across it (no gravel/ties on the asphalt), and a crossing signal stands at the
+  // roadside. Nothing fancier than that.
   function drawCrossing(ctx, c) {
-    const cx = c.tx + 0.5, cy = c.ty + 0.5;
-    const dx = c.dirx, dy = c.diry, px = -dy, py = dx;     // rail dir + road dir
     const road = (C.PAL && C.PAL.road) || '#4e565f';
-    poly(ctx, [
-      w2s(cx + dx * -0.55 + px * -0.5, cy + dy * -0.55 + py * -0.5, 0.02),
-      w2s(cx + dx * 0.55 + px * -0.5, cy + dy * 0.55 + py * -0.5, 0.02),
-      w2s(cx + dx * 0.55 + px * 0.5, cy + dy * 0.55 + py * 0.5, 0.02),
-      w2s(cx + dx * -0.55 + px * 0.5, cy + dy * -0.55 + py * 0.5, 0.02),
-    ]);
-    ctx.fillStyle = road; ctx.fill();
+    const pts = c.pts;
+    if (!pts || pts.length < 2) return;
+    // averaged perpendicular at sample i (so the asphalt ribbon bends smoothly)
+    const perp = (i) => {
+      let dx = 0, dy = 0;
+      if (i > 0) { dx += pts[i].tx - pts[i - 1].tx; dy += pts[i].ty - pts[i - 1].ty; }
+      if (i < pts.length - 1) { dx += pts[i + 1].tx - pts[i].tx; dy += pts[i + 1].ty - pts[i].ty; }
+      const m = Math.hypot(dx, dy) || 1; return { x: -dy / m, y: dx / m };
+    };
+    // 1) pave the track flush into the road: a road-coloured ribbon along the
+    //    centreline, wide enough to bury the ballast + sleepers under asphalt.
+    const HALF = 0.36;
+    const left = [], right = [];
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i], n = perp(i);
+      left.push(w2s(p.tx + 0.5 + n.x * HALF, p.ty + 0.5 + n.y * HALF, 0.02));
+      right.push(w2s(p.tx + 0.5 - n.x * HALF, p.ty + 0.5 - n.y * HALF, 0.02));
+    }
+    ctx.fillStyle = road;
+    poly(ctx, left.concat(right.reverse())); ctx.fill();
+    // 2) the two steel rails, laid flush across the asphalt (follow the curve)
     for (const sgn of [-1, 1]) {
-      const r0 = w2s(cx + dx * -0.55 + px * sgn * RAIL_GAUGE, cy + dy * -0.55 + py * sgn * RAIL_GAUGE, 0.04);
-      const r1 = w2s(cx + dx * 0.55 + px * sgn * RAIL_GAUGE, cy + dy * 0.55 + py * sgn * RAIL_GAUGE, 0.04);
-      strokeBetween(ctx, r0, r1, 1.4, '#6b7178');
+      ctx.strokeStyle = '#6b7178'; ctx.lineWidth = 1.4; ctx.setLineDash([]);
+      ctx.beginPath();
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1];
+        const dx = b.tx - a.tx, dy = b.ty - a.ty, m = Math.hypot(dx, dy);
+        if (m < 1e-4) continue;
+        const qx = -dy / m, qy = dx / m;
+        const p0 = w2s(a.tx + 0.5 + qx * sgn * RAIL_GAUGE, a.ty + 0.5 + qy * sgn * RAIL_GAUGE, 0.04);
+        const p1 = w2s(b.tx + 0.5 + qx * sgn * RAIL_GAUGE, b.ty + 0.5 + qy * sgn * RAIL_GAUGE, 0.04);
+        ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y);
+      }
+      ctx.stroke();
     }
-    ctx.strokeStyle = 'rgba(236,238,240,0.82)'; ctx.lineWidth = 1.4; ctx.setLineDash([]);
-    for (const off of [-0.42, 0.42]) {
-      const w0 = w2s(cx + dx * -0.42 + px * off, cy + dy * -0.42 + py * off, 0.05);
-      const w1 = w2s(cx + dx * 0.42 + px * off, cy + dy * 0.42 + py * off, 0.05);
-      ctx.beginPath(); ctx.moveTo(w0.x, w0.y); ctx.lineTo(w1.x, w1.y); ctx.stroke();
-    }
+    // 3) the crossing signal at the roadside
+    drawCrossingSignal(ctx, c.cx + c.ux * 0.75, c.cy + c.uy * 0.75);
+  }
+
+  // A small level-crossing signal: a post, a white crossbuck, two red lamps.
+  function drawCrossingSignal(ctx, bx, by) {
+    const H = 1.15;
+    const base = w2s(bx, by, 0), top = w2s(bx, by, H);
+    ctx.lineCap = 'round'; ctx.setLineDash([]);
+    ctx.strokeStyle = '#3a3f45'; ctx.lineWidth = 2.4;            // post
+    ctx.beginPath(); ctx.moveTo(base.x, base.y); ctx.lineTo(top.x, top.y); ctx.stroke();
+    const cb = w2s(bx, by, H * 0.93);                            // crossbuck (X)
+    ctx.strokeStyle = '#eef1f3'; ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(cb.x - 4, cb.y - 4); ctx.lineTo(cb.x + 4, cb.y + 4);
+    ctx.moveTo(cb.x + 4, cb.y - 4); ctx.lineTo(cb.x - 4, cb.y + 4);
+    ctx.stroke();
+    const lp = w2s(bx, by, H * 0.7);                             // two red lamps
+    ctx.fillStyle = '#e23b2e';
+    ctx.beginPath(); ctx.arc(lp.x - 3, lp.y, 1.6, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(lp.x + 3, lp.y, 1.6, 0, Math.PI * 2); ctx.fill();
+    ctx.lineCap = 'butt';
   }
 
   // Track along a closed loop up to arc length `built`, with a work front + survey

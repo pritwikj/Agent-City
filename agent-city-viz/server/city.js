@@ -43,9 +43,13 @@ export const SAVE_VERSION = 1;
 
 // ── Tuning (the whole growth economy lives here) ─────────────────────────────
 export const TUNING = {
-  WORK_PER_TOOL: 1,        // work units per successful PostToolUse
-  WORK_PER_THINK_SEC: 0.15,// work units accrued per second a session spends thinking
-                           // (mid-turn, no tool running) — thinking builds too
+  WORK_PER_TOOL: 1,        // fallback work units for a tool call with no token amount
+  OUTPUT_TOKENS_PER_WORK: 60,// model output_tokens that equal one unit of construction work.
+                           // A tool call binds the worker; this governs how MUCH it builds —
+                           // amount = output_tokens(since last deposit) / this. base bldg (30u)
+                           // ≈ 1,800 tokens, megatower (400u) ≈ 24,000. Single tuning knob.
+  WORK_PER_THINK_SEC: 0.075,// liveness trickle while a session is mid-turn thinking (no tool
+                           // running): the crane visibly creeps; real token flow outpaces it
   BASE_REQUIRED: 30,       // building n needs BASE + STEP*n work units...
   REQUIRED_STEP: 15,
   REQUIRED_CAP: 400,       // ...capped so megatowers stay reachable
@@ -57,10 +61,10 @@ export const TUNING = {
   SPREAD_TARGET: 3,        // avg buildings/block before infill beats expansion
   EXPAND_PROB: 0.5,        // balanced: ~50/50 new frontier block vs. infill existing community
   INFILL_EXPAND_PROB: 0.12,// once a block is dense, opening a new one is rare
-  // WIP cap (see lotForSession): once this many never-completed sites are open in
-  // a district, a session is steered to ADOPT an abandoned site instead of
+  // WIP cap (see lotForSession): once this many never-completed sites are open
+  // CITYWIDE, a session is steered to ADOPT an abandoned site instead of
   // starting another — probabilistic, not absolute, so the city can still spread.
-  WIP_CAP: 6,              // open new-build sites before the backlog brake kicks in
+  WIP_CAP: 6,              // open new-build sites citywide before the backlog brake kicks in
   WIP_ADOPT_PROB: 0.85,    // chance a session past the cap finishes an open site first
 };
 
@@ -714,13 +718,12 @@ export class CityModel extends EventEmitter {
     if (existing && district.lots[existing.index] === existing) return existing;
 
     let lot = null;
-    // Backlog brake: when too many never-completed sites are already open, steer
-    // this session onto an abandoned one (85% of the time) ahead of breaking new
-    // ground OR renovating a finished building — clears scaffolding before adding
-    // more. Probabilistic so the city can still occasionally spread under load.
-    const backlog = district.lots.filter(
-      (l) => l.state !== 'complete' && !l.everCompleted
-    ).length;
+    // Backlog brake: when too many never-completed sites are already open across
+    // the WHOLE city, steer this session onto an abandoned one (85% of the time)
+    // ahead of breaking new ground OR renovating a finished building — clears
+    // scaffolding before adding more. Probabilistic so the city can still
+    // occasionally spread under load.
+    const backlog = this.cityBacklog();
     if (backlog >= TUNING.WIP_CAP && (hash32(`${key}:wip`) % 100) < TUNING.WIP_ADOPT_PROB * 100) {
       lot = this.pickResumable(district, key);
     }
@@ -760,18 +763,47 @@ export class CityModel extends EventEmitter {
   }
 
   /**
-   * An abandoned, mid-construction lot in the district with no live session
-   * bound to it — a half-built site a new/hopping crew can move onto and finish.
-   * This is what keeps released sites from becoming permanent ghost scaffolding
-   * now that restarts no longer auto-complete them.
+   * Count of never-completed open sites across the WHOLE city (not one district).
+   * This is the figure the backlog brake throttles on, so a backlog spread thin
+   * across many districts still trips the brake the way a single packed district
+   * would.
+   */
+  cityBacklog() {
+    let n = 0;
+    for (const d of this.districts.values()) {
+      for (const l of d.lots) {
+        if (l.state !== 'complete' && !l.everCompleted) n += 1;
+      }
+    }
+    return n;
+  }
+
+  /**
+   * An abandoned, mid-construction lot with no live session bound to it — a
+   * half-built site a new/hopping crew can move onto and finish. This is what
+   * keeps released sites from becoming permanent ghost scaffolding now that
+   * restarts no longer auto-complete them.
+   *
+   * Prefers the session's own district so adoption stays local when possible,
+   * but falls back to any district so the global brake can actually drain a
+   * backlog wherever it sits.
    */
   pickResumable(district, key) {
     const bound = new Set(this.sessionLot.values());
-    const candidates = district.lots.filter(
+    const local = district.lots.filter(
       (l) => l.state !== 'complete' && !bound.has(l)
     );
-    if (!candidates.length) return null;
-    return candidates[hash32(`${key}:res`) % candidates.length];
+    if (local.length) return local[hash32(`${key}:res`) % local.length];
+
+    const citywide = [];
+    for (const d of this.districts.values()) {
+      if (d === district) continue;
+      for (const l of d.lots) {
+        if (l.state !== 'complete' && !bound.has(l)) citywide.push(l);
+      }
+    }
+    if (!citywide.length) return null;
+    return citywide[hash32(`${key}:res:city`) % citywide.length];
   }
 
   /** Move a session (and its crew) onto a different building to renovate. */
@@ -847,12 +879,16 @@ export class CityModel extends EventEmitter {
   }
 
   /**
-   * Add work to a session's building. Default is +1 unit from a successful tool
-   * use (tool kind is irrelevant); thinking time passes a smaller fractional
-   * `amount`. Either way it's pure VOLUME of work — same code path, same growth.
+   * Add work to a session's building. `amount` is the work units to deposit:
+   * a successful tool call passes its model-output-token delta (0 ⇒ bind the
+   * worker but build nothing yet), and the thinking timer passes a small
+   * fractional trickle. Any finite amount >= 0 is honored; only an absent /
+   * invalid amount falls back to WORK_PER_TOOL (legacy +1). Either way the
+   * binding path is identical — same lot, same growth.
    */
   recordWork({ project, sessionId, amount }) {
-    const inc = typeof amount === 'number' && amount > 0 ? amount : TUNING.WORK_PER_TOOL;
+    const inc = typeof amount === 'number' && Number.isFinite(amount) && amount >= 0
+      ? amount : TUNING.WORK_PER_TOOL;
     const d = this.ensureDistrict(project);
     let lot = this.lotForSession(d, sessionId);
     // A finished structure + a still-running session: pick a finished, growable
@@ -878,7 +914,7 @@ export class CityModel extends EventEmitter {
     lot.progress += inc;
     d.totalWork += inc;
     if (lot.progress >= lot.required) this.finishLot(d, lot);
-    else this.emitDelta(d, lot, 'progress');
+    else if (inc > 0) this.emitDelta(d, lot, 'progress'); // 0 ⇒ bind only, skip no-op delta
     this.emit('dirty');
   }
 
